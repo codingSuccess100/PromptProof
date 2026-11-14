@@ -66,9 +66,9 @@ const EXAMPLE = {
   afterAnswer:
     "Billing errors, including duplicate charges and incorrect invoices, required refunds costing $1,200 last month. Delivery complaints also point to repeated delays, including missed promised dates and poor communication. Support feedback was positive. A decision is needed by Friday.",
   checks: [
-    { label: "Opens with the billing errors", before: false, after: true },
-    { label: "Includes the $1,200 refund cost", before: false, after: true },
-    { label: "Mentions the Friday decision deadline", before: false, after: true },
+    { label: "Billing is the first issue named", before: false, after: true },
+    { label: "Gives $1,200 as the refund cost", before: false, after: true },
+    { label: "States a decision or deadline for Friday", before: false, after: true },
     { label: "60 words or fewer", before: true, after: true },
     { label: "One plain paragraph, no bullets", before: true, after: true },
   ],
@@ -126,8 +126,9 @@ export function Landing() {
             ))}
           </ul>
           <p className="fine">
-            Shown: the first of three runs each. Across three runs the rough prompt passed 2, 2, and 0 checks, and the
-            revision passed 5, 5, and 5.
+            These two answers were recorded on November 14, 2026 and rescored with the current checks: 2 and 5. The
+            earlier three-run counts (2, 2, 0 and 5, 5, 5) came from an earlier version of the checks, so they are
+            history, not a current result.
           </p>
         </figure>
       </section>
@@ -144,7 +145,7 @@ export function Landing() {
           </li>
           <li>
             <h2>Revise and compare</h2>
-            <p>Each finding comes with a specific edit. Test it and see both prompts, both answers, and what changed.</p>
+            <p>You get one complete revised prompt to edit. Test it and see both prompts, both answers, and what changed.</p>
           </li>
         </ol>
         <p className="fine">
@@ -164,9 +165,16 @@ export function Method() {
       <h2>What is measured</h2>
       <ul>
         <li>
-          <b>Requirements met.</b> Each requirement is a fixed rule applied to the answer: a word count, whether an
-          exact piece of text appears, whether the answer is one paragraph or a numbered list. The evidence is shown
-          beside every result.
+          <b>Requirements met.</b> Each requirement is a fixed rule applied to the answer: a word count, whether a
+          piece of wording appears, whether the answer is one paragraph or a numbered list. The evidence is shown
+          beside every result. Each label states what its rule tests. &quot;Billing is the first issue named&quot;
+          fails when delivery is named before billing, even in the same sentence.
+        </li>
+        <li>
+          <b>Wording matches.</b> Capitalization, quote style, dash style, and spacing are ignored. Spelling and
+          accents must match unless you approve another spelling. The wording must stand on its own, so ABC-123 does
+          not match inside ABC-1234, and amounts, IDs, and names are never matched loosely. If you meant a topic and
+          not a wording, mark it as a topic. It is then read by the goal review and not scored.
         </li>
         <li>
           <b>Comparisons.</b> Two runs are compared only when the task, reference material, requirements, scorer
@@ -176,6 +184,22 @@ export function Method() {
           <b>The X-ray.</b> Each instruction in your prompt is removed in turn and the task is rerun three times. The
           unchanged prompt is also rerun three times. Results are reported per requirement, as pass counts.
         </li>
+      </ul>
+
+      <h2>What the AI receives</h2>
+      <ul>
+        <li>The AI that writes the answer receives your prompt and your reference notes. Nothing else.</li>
+        <li>
+          It does not receive your goal, your checks, or the details you confirm in setup. Those are used to evaluate
+          the answer and to propose a revision. A proposed revision writes them into the prompt, where you can see
+          and edit them.
+        </li>
+        <li>
+          Answers have an output limit. An answer that stops at the limit is marked incomplete. It is not scored as a
+          prompt failure, the goal review of it reports nothing as missing, and no revision is proposed from it.
+          Structured analysis replies that are cut off are discarded, never patched together.
+        </li>
+        <li>The output limit is part of the experiment. Changing it starts a new experiment.</li>
       </ul>
 
       <h2>Goal review</h2>
@@ -231,12 +255,17 @@ export function Method() {
 
       <h2>Improve and test</h2>
       <p>
-        An optional helper proposes one small edit, tests it on a fresh run under the same checks, and has the new
-        answer reviewed against your goal. It keeps the edit only if a check improved, none regressed, and the review
-        raised no drift concern. It stops after three edits. It cannot change your checks. An edit that drops most of
-        your wording, or introduces a number, date, or name you did not supply, is blocked before testing. It will not
-        force an exact phrase into your prompt just to pass a check: it stops and asks you. Every attempt is listed,
-        including rejected ones, and a kept edit is rerun twice more to see if it holds.
+        After each run you get one complete proposed prompt, labeled as untested. Amounts, dates, and identifiers
+        from your original prompt are checked one by one and restored if the rewrite dropped them. A detail that
+        appears in the rewrite but nowhere in your prompt, notes, or goal is replaced with a visible placeholder for
+        you to fill in. Nothing is claimed about the proposal until you test it.
+      </p>
+      <p>
+        An optional helper repeats this up to three times. It keeps a revision on its own only when a rule-based
+        check improved and none got worse. When only the goal review changed, or one check improved while another got
+        worse, it shows you the candidate and you decide. Fewer reviewer concerns is not treated as proof. It cannot
+        change your goal or checks, and it will not force an exact phrase into your prompt just to pass a check.
+        Every attempt is listed, including rejected ones.
       </p>
 
       <h2>Your text</h2>

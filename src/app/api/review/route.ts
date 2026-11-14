@@ -14,13 +14,13 @@ export async function POST(request: Request): Promise<NextResponse<GoalReview | 
   if (!allowRequest(request, "review", 80)) {
     return NextResponse.json({ error: "Too many requests from this device. Wait a few minutes and try again." }, { status: 429 });
   }
-  let body: { taskId?: unknown; prompt?: unknown; custom?: unknown; output?: unknown };
+  let body: { taskId?: unknown; prompt?: unknown; custom?: unknown; output?: unknown; complete?: unknown };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 });
   }
-  const resolved = resolveTask(body.taskId, body.custom);
+  const resolved = resolveTask(body.taskId, body.custom, (body as { long?: unknown }).long);
   if ("error" in resolved) return NextResponse.json({ error: resolved.error }, { status: resolved.status });
   const problem = validatePrompt(body.prompt);
   if (problem) return NextResponse.json({ error: problem }, { status: 400 });
@@ -28,7 +28,7 @@ export async function POST(request: Request): Promise<NextResponse<GoalReview | 
     return NextResponse.json({ error: "There is no answer to review." }, { status: 400 });
   }
   try {
-    return NextResponse.json(await reviewGoal(resolved.task, body.prompt as string, body.output.slice(0, 12000)));
+    return NextResponse.json(await reviewGoal(resolved.task, body.prompt as string, body.output.slice(0, 40000), body.complete !== false));
   } catch (err) {
     const reason = err instanceof Error ? err.message : "unknown error";
     return NextResponse.json({ error: `The goal review did not finish (${reason}). The rule-based checks above are unaffected.` }, { status: 502 });

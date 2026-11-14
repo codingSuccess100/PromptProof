@@ -12,14 +12,14 @@ const MAX_CHUNKS = 8;
 const PRIMARY_SPLIT = /(?<=[.!?;:])\s+|(?<=,)\s+|\s*\n+\s*/;
 
 // Inside a long piece, start a new chunk before common "new instruction" openers.
+// "with no ..." and "without ..." are not openers: they modify the clause before them, and removing
+// that clause alone would leave a dangling fragment, which is not a coherent experiment.
 const SECONDARY_SPLIT = new RegExp(
   "\\s+(?=(?:" +
     [
       "under \\d",
       "in (?:under|fewer|less|no more)\\b",
       "no more than\\b",
-      "with no\\b",
-      "without\\b",
       "(?:and|then) (?:put|mention|include|keep|make|end|start|use|write|add|lead|flag|list|give|say|mark|ask|open|begin|output|leave|only)\\b",
       "but\\b",
     ].join("|") +
@@ -71,7 +71,8 @@ export function segmentPrompt(prompt: string): PromptChunk[] {
   // A one-word fragment is not an instruction on its own. Attach it to a neighbor.
   const merged: string[] = [];
   for (const part of parts) {
-    if (merged.length > 0 && wordCount(part) < 2) {
+    // A fragment under three words (an appositive such as "the CFO") is not an instruction on its own.
+    if (merged.length > 0 && wordCount(part) < 3) {
       merged[merged.length - 1] = `${merged[merged.length - 1]} ${part}`;
     } else {
       merged.push(part);

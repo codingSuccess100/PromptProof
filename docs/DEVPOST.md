@@ -15,11 +15,11 @@ We all write prompts every day, and none of us could say which words in them act
 PromptProof turns a rough prompt into a tested one.
 
 1. You write a prompt and say what you want from the answer, in ordinary words.
-2. It proposes an evaluation for you to review: rule-based checks where a rule can verify something, a clarifying question where your goal is vague, and everything else left to a goal review. Nothing is used until you accept it.
+2. It proposes an evaluation for you to review: rule-based checks where a rule can verify something, at most two short questions that use what you already said (a date is asked for with a date field, and can be skipped), and everything else left to a goal review. Nothing is used until you accept it.
 3. It runs the prompt and shows the answer beside two separate things: rule-based checks with their evidence, and a model-assisted goal review that flags problems a checklist cannot see, such as an answer written for the wrong reader.
-4. It shows at most three findings first. Each has what happened, the evidence, why it matters, and an exact edit to try, marked as untested.
-5. You test the revision. The comparison shows prompt changes and answer changes under the same goal and checks, including regressions.
-6. Optionally, an X-ray removes one instruction at a time to show what the results depend on, and a bounded helper tries up to three single edits.
+4. It leads with a one-line diagnosis and one complete revised prompt you can edit, marked as untested. Amounts, dates, and identifiers from your original are kept, and a detail it cannot support becomes a visible placeholder. The evidence is one click away.
+5. You test the revised prompt with one click. The comparison shows prompt changes and answer changes under the same goal and checks, including regressions.
+6. Optionally, an X-ray removes one instruction at a time to show what the results depend on, and a bounded helper tries up to three revisions.
 
 A perfect checklist score never hides a goal-review concern, and the review never changes a checklist result. Neither is presented as a quality score.
 
@@ -28,14 +28,16 @@ A perfect checklist score never hides a goal-review concern, and the review neve
 - Next.js, React, and TypeScript, deployed on Vercel.
 - OpenAI API, called only from the server.
 - A rule-based engine: prompt segmentation, leave-one-out ablation with parallel model calls, rule-based checks, an evaluation-context fingerprint, and failure diagnosis.
-- No database. Prompts are not stored.
-- 84 tests on an offline mock model, including regression tests for invalid comparisons, a prompt that passes every check while answering the wrong task, exact-string misuse, and helper guardrails.
-- A canvas-drawn spectral wave background and scroll-driven walkthrough, built without an animation library, with reduced-motion and mobile versions.
+- No database. The app's own code does not store or log prompts. We did not audit the hosting provider's request logs, and prompts are sent to the model provider.
+- 126 tests on an offline mock model and 53 browser checks, including regression tests for invalid comparisons, a prompt that passes every check while answering the wrong task, a check whose label did not match its rule, cut-off answers, and revisions that drop or invent details.
+- A canvas-drawn spectral wave background on the landing page, built without an animation library, with a pause control and reduced-motion and mobile versions.
 
 ## Challenges we ran into
 
 - Making comparisons valid. An early version compared runs with different requirements and reported a meaningless improvement. Every result now carries a fingerprint of its evaluation context.
 - A perfect score that was wrong. A prompt asking for a vendor email passed all five checks on a task that wanted a CFO summary. That is why the goal review exists as its own layer.
+- A check that did not mean what its label said. "Opens with the billing errors" passed an answer that named delivery first. Every label now states exactly what its rule tests, with counterexample tests.
+- Cut-off answers. A long answer that hit the output limit was being judged as if the prompt had failed. Incomplete answers are now marked, not scored, and not compared.
 - Being honest about what a rule proves. A fixed rule is repeatable, not complete. An exact-text check shows a phrase appears, not that it is explained correctly.
 - Stopping a capable model from guessing the requirements. Each task depends on facts the model never sees.
 - Speed. An X-ray needs one model call per part of the prompt, so we run them in parallel. [Add measured time from the report.]
@@ -43,7 +45,7 @@ A perfect checklist score never hides a goal-review concern, and the review neve
 
 ## Accomplishments that we're proud of
 
-- The X-ray moment: watching a phrase you were sure about turn grey.
+- The wrong-task moment: five of five checks pass, and the app still tells you the answer is for the wrong reader.
 - Every number on screen is either an objective check or labeled as a model-based observation.
 - [Add user testing result with sample size, for example "N of M hackers improved their score on the second attempt."]
 

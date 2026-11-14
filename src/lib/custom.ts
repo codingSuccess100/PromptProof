@@ -1,7 +1,8 @@
 import { countWords, foldLoose, normalizeText } from "./checks";
 import { getTask } from "./tasks";
 import { CUSTOM_TASK_ID } from "./types";
-import type { CheckSpec, CustomCheck, CustomCheckKind, CustomTaskInput, Task } from "./types";
+import { ANSWER_TOKENS, LONG_ANSWER_TOKENS } from "./model";
+import type { BriefAnswer, CheckSpec, CustomCheck, CustomCheckKind, CustomTaskInput, Task } from "./types";
 
 // Turns a user's own requirements into the same rule-based checks the practice scenarios use.
 // User text is always escaped and matched literally. No user-supplied regex ever runs.
@@ -22,6 +23,50 @@ const KINDS: CustomCheckKind[] = [
 ];
 const NEEDS_TEXT: CustomCheckKind[] = ["includes", "excludes", "startsWith"];
 const NEEDS_VALUE: CustomCheckKind[] = ["maxWords", "numberedItems"];
+
+/**
+ * How a text requirement is matched. One policy for every "contains", "does not mention", and "starts with" check:
+ * - Capitalization is ignored.
+ * - Straight and curly quotes, dash styles, and runs of spaces are treated as the same.
+ * - Accents and spelling must match, unless you approve another spelling.
+ * - The text must stand on its own: "ABC-123" does not match inside "ABC-1234".
+ * This tests that the wording appears. It does not test that a topic is covered or explained correctly.
+ */
+export const MATCH_POLICY =
+  "Capitalization, quote style, dash style, and spacing are ignored. Spelling and accents must match unless you approve another spelling. The text must stand on its own, so ABC-123 does not match inside ABC-1234.";
+
+/** Whole-token boundaries, so identifiers and amounts cannot match inside longer ones. */
+const bounded = (alternatives: string[]) => `(?<![\\p{L}\\p{N}])(?:${alternatives.map(escapeRegex).join("|")})(?![\\p{L}\\p{N}])`;
+
+/**
+ * The goal as the reviewer and the proposer see it: the user's words, then confirmed details,
+ * then what was left unspecified (so nothing gets invented), then topics to cover.
+ * The generation model never receives any of this.
+ */
+export function composeGoal(goal: string, brief: BriefAnswer[] = [], coverage: string[] = []): string {
+  const lines = [goal.trim()];
+  const answered = brief.filter((b) => b.value !== null && b.value.trim() !== "");
+  const skipped = brief.filter((b) => b.value === null);
+  if (answered.length > 0) lines.push("Confirmed details:", ...answered.map((b) => `- ${b.question} ${b.value}`));
+  if (skipped.length > 0) {
+    lines.push("Not specified by the user. Do not invent these. Use a clearly labeled placeholder or a provisional version:", ...skipped.map((b) => `- ${b.question}${b.type === "date" ? " (no date given: use an undated Day 1, Day 2 structure)" : ""}`));
+  }
+  if (coverage.length > 0) lines.push("Topics the answer should cover (reviewed, not scored by a rule):", ...coverage.map((c) => `- ${c}`));
+  return lines.filter(Boolean).join("\n");
+}
+
+function cleanBrief(raw: unknown): BriefAnswer[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((b): b is BriefAnswer => !!b && typeof b === "object" && typeof (b as BriefAnswer).id === "string" && typeof (b as BriefAnswer).question === "string")
+    .slice(0, 8)
+    .map((b) => ({
+      id: b.id.slice(0, 40),
+      question: b.question.slice(0, 200),
+      type: b.type === "date" || b.type === "number" || b.type === "choice" ? b.type : "text",
+      value: typeof b.value === "string" ? b.value.trim().slice(0, 600) : null,
+    }));
+}
 
 function escapeRegex(text: string): string {
   return normalizeText(text)
@@ -69,7 +114,7 @@ export function describeCheck(check: CustomCheck): string {
     case "maxWords":
       return `${check.value} words or fewer`;
     case "includes":
-      return `Contains the exact text "${check.text}"${(check.alternatives ?? []).map((a) => ` or "${a}"`).join("")}`;
+      return `Contains the wording "${check.text}"${(check.alternatives ?? []).map((a) => ` or "${a}"`).join("")}`;
     case "excludes":
       return `Does not mention "${check.text}"`;
     case "startsWith":
@@ -105,7 +150,8 @@ function toSpec(check: CustomCheck, index: number): CheckSpec {
         id,
         label,
         kind: "matches",
-        pattern: all.map(escapeRegex).join("|"),
+        pattern: bounded(all),
+        flags: "iu",
         ghostClause: `Include "${text}".`,
         promptCue: all.map(escapeRegex).join("|"),
         literals: all,
@@ -116,7 +162,8 @@ function toSpec(check: CustomCheck, index: number): CheckSpec {
         id,
         label,
         kind: "notMatches",
-        pattern: esc,
+        pattern: bounded([text]),
+        flags: "iu",
         literals: [text],
         ghostClause: `Do not mention "${text}".`,
         promptCue: `(no|not|without|avoid|leave out|exclude|never|omit)[^.]*${esc}`,
@@ -202,10 +249,12 @@ export function findContradiction(checks: CustomCheck[]): string | null {
 
 export function buildCustomTask(input: unknown): { task: Task } | { error: string } {
   if (!input || typeof input !== "object") return { error: "Add at least one requirement for your own prompt." };
-  const { material, checks: rawChecks, goal: rawGoal } = input as Partial<CustomTaskInput>;
+  const { material, checks: rawChecks, goal: rawGoal, brief, coverage } = input as Partial<CustomTaskInput>;
   const text = typeof material === "string" ? material : "";
   if (text.length > MAX_MATERIAL_CHARS) return { error: `Keep the material under ${MAX_MATERIAL_CHARS} characters.` };
-  const goal = typeof rawGoal === "string" ? rawGoal.trim().slice(0, MAX_GOAL_CHARS) : "";
+  const topics = Array.isArray(coverage) ? coverage.filter((c): c is string => typeof c === "string" && c.trim().length > 0).map((c) => c.trim().slice(0, MAX_CHECK_TEXT)).slice(0, 8) : [];
+  const stated = typeof rawGoal === "string" ? rawGoal.trim().slice(0, MAX_GOAL_CHARS) : "";
+  const goal = stated || topics.length > 0 ? composeGoal(stated, cleanBrief(brief), topics) : "";
   const checks = Array.isArray(rawChecks) ? rawChecks : [];
   // With a goal and no checks the answer is unscored: there is a goal review, and no invented score.
   if (checks.length === 0 && goal.length === 0) {
@@ -230,13 +279,15 @@ export function buildCustomTask(input: unknown): { task: Task } | { error: strin
 }
 
 /** Finds a practice scenario by id, or builds the user's own task. */
-export function resolveTask(taskId: unknown, custom: unknown): { task: Task } | { error: string; status: number } {
+export function resolveTask(taskId: unknown, custom: unknown, long: unknown = false): { task: Task } | { error: string; status: number } {
+  // The answer budget is fixed per experiment, so an original and its revision are generated under the same limit.
+  const outputTokens = long === true ? LONG_ANSWER_TOKENS : ANSWER_TOKENS;
   if (taskId === CUSTOM_TASK_ID) {
     const built = buildCustomTask(custom);
-    return "task" in built ? built : { error: built.error, status: 400 };
+    return "task" in built ? { task: { ...built.task, outputTokens } } : { error: built.error, status: 400 };
   }
   const task = typeof taskId === "string" ? getTask(taskId) : undefined;
-  return task ? { task } : { error: "Unknown task.", status: 404 };
+  return task ? { task: { ...task, outputTokens } } : { error: "Unknown task.", status: 404 };
 }
 
 /**

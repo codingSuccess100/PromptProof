@@ -13,6 +13,7 @@ export function diagnose(
   output: string,
   checks: CheckResult[],
   friction: FrictionFinding[],
+  complete = true,
 ): Diagnosis[] {
   const conflicts = friction.filter((f) => f.category === "conflicting_instructions");
   const found: Diagnosis[] = [];
@@ -21,6 +22,18 @@ export function diagnose(
     if (!result || result.pass) continue;
     const base = { checkId: spec.id, checkLabel: spec.label, observation: `The answer did not meet: ${spec.label}.`, evidence: `Check result: ${result.detail}.` };
     const asked = promptMentions(spec.promptCue, prompt);
+
+    // 0. The answer was cut off. Something missing may simply be in the part that was never written.
+    if (!complete && spec.kind !== "maxWords" && spec.kind !== "mentionsFirst" && spec.kind !== "startsWith" && spec.kind !== "firstSentenceMatches") {
+      found.push({
+        ...base,
+        kind: "insufficient_evidence",
+        evidence: `${base.evidence} The answer stopped at the output limit before it was finished.`,
+        interpretation: "This may be in the part of the answer that was never written, so it is not evidence of a problem with your prompt. Get a complete answer first.",
+        suggestedEdit: null,
+      });
+      continue;
+    }
 
     // 1. The answer has a close variant of an exact-text requirement.
     const nearMiss =

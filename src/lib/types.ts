@@ -6,6 +6,7 @@ export type CheckKind =
   | "matches" // output must match the pattern
   | "notMatches" // output must not match the pattern
   | "firstSentenceMatches"
+  | "mentionsFirst" // pattern is named in the first sentence, before any `rival`, and not negated
   | "startsWith"
   | "noListFormatting"
   | "numberedItemsExactly"
@@ -27,6 +28,8 @@ export interface CheckSpec {
   promptCue: string;
   /** For exact-text checks from a user: the literal strings being searched for. */
   literals?: string[];
+  /** For mentionsFirst: the competing subject that must not come earlier. */
+  rival?: string;
 }
 
 /** What kind of evidence a check gives. Shown beside every result so nobody mistakes one for another. */
@@ -46,6 +49,8 @@ export interface Task {
   goal: string;
   /** For practice tasks: a neutral opening that restores the intended recipient and deliverable. Offered, never applied silently. */
   goalRestore?: string;
+  /** Output budget for the generation model, in tokens. Part of the evaluation context. */
+  outputTokens?: number;
   /** Offline-mock only: wording that suggests the prompt asks for the intended deliverable, or for something else. */
   mockIntent?: { expects: string; conflicts: string };
 }
@@ -130,8 +135,32 @@ export interface CustomTaskInput {
   material: string;
   /** Rule-based checks the user has confirmed. May be empty when a goal is given: the answer is then unscored. */
   checks: CustomCheck[];
-  /** What the user wants from the answer, in their own words. Used for goal review only. */
+  /** What the user wants from the answer, in their own words. Used for goal review and for proposing revisions. Never sent to the generation model. */
   goal?: string;
+  /** Answers to clarifying questions. A null value means the user skipped it. */
+  brief?: BriefAnswer[];
+  /** Topics the answer should cover. Reviewed by the goal review, never scored by a rule. */
+  coverage?: string[];
+}
+
+export type QuestionType = "date" | "text" | "number" | "choice";
+
+/** One clarifying question. The id is stable, so an answered or skipped question is never asked again. */
+export interface ClarifyQuestion {
+  id: string;
+  question: string;
+  type: QuestionType;
+  options?: string[];
+  /** Why the answer would change the result. */
+  why: string;
+}
+
+export interface BriefAnswer {
+  id: string;
+  question: string;
+  type: QuestionType;
+  /** The answer, stored in its own type (a date as YYYY-MM-DD). Null means skipped. */
+  value: string | null;
 }
 
 export const CUSTOM_TASK_ID = "custom";
@@ -169,6 +198,7 @@ export interface Diagnosis {
   checkId: string;
   checkLabel: string;
   kind: DiagnosisKind;
+  /** True when the goal says something the prompt and reference material never told the model. */
   observation: string;
   evidence: string;
   interpretation: string;
@@ -179,6 +209,8 @@ export interface Diagnosis {
 }
 
 export interface RunResult {
+  /** False when the provider stopped the answer at the output limit. Checks on a cut-off answer are not reliable. */
+  complete: boolean;
   contextId: string;
   context: ContextSnapshot;
   diagnoses: Diagnosis[];
@@ -228,6 +260,8 @@ export interface AblationResult {
   changes: CheckChange[];
   /** Requirements this one instruction appears to carry together. With more than one, the test cannot separate them. */
   bundled: string[];
+  /** True for the instruction that states the task. Removing it tests "no task", which is not an edit to consider. */
+  core: boolean;
   /** Runs that returned an answer. A failed request is not a zero score. */
   validRuns: number;
   failedRuns: number;
@@ -244,23 +278,30 @@ export interface XrayRequest {
 export interface SuggestRequest {
   /** What the user wants from the answer, in ordinary language. */
   goal: string;
+  /** The prompt being tested, so nothing it already says is asked again. */
+  prompt?: string;
+  material?: string;
+  /** Questions already answered or skipped. */
+  answers?: BriefAnswer[];
 }
 
 /**
- * suggestions: every part of the goal became a rule-based check.
- * partial: some parts became checks, the rest is left for goal review.
- * needs_clarification: nothing mechanical yet. A question and editable interpretations are offered.
+ * suggestions: every stated requirement became a rule-based check.
+ * partial: some became checks, the rest is left for goal review.
+ * needs_clarification: a detail is missing that would change the result. Questions are offered and can be skipped.
+ * ready: nothing to propose and nothing to ask. The answer will be reviewed against the goal.
  */
-export type SuggestStatus = "suggestions" | "partial" | "needs_clarification";
+export type SuggestStatus = "suggestions" | "partial" | "needs_clarification" | "ready";
 
 export interface SuggestResult {
   status: SuggestStatus;
-  /** Proposed checks. They are proposals until the user accepts them. */
   checks: CustomCheck[];
   /** Parts of the goal that a rule cannot verify. Covered by goal review, not scored. */
   qualitative: string[];
-  clarify: { question: string; options: string[] } | null;
-  /** A contradiction among the proposed checks, if there is one. */
+  /** What is already known from the prompt, goal, and earlier answers. */
+  known: string[];
+  /** At most two questions, never one that was already answered or skipped. */
+  questions: ClarifyQuestion[];
   warning: string | null;
   model: string;
   mock: boolean;
@@ -293,6 +334,8 @@ export interface GoalReview {
   status: "aligned" | "concerns" | "unclear" | "unavailable";
   summary: string;
   findings: GoalFinding[];
+  /** True when the reviewer saw only part of the answer (it was cut off, or too long). It then cannot say something is absent. */
+  partial: boolean;
   model: string;
   mock: boolean;
   ms: number;
@@ -320,6 +363,8 @@ export interface XrayResult {
   baselineChecks: { id: string; label: string; passes: number }[];
   /** Plain-language caution when the evidence is thin, for example a zero-score baseline. */
   caution: string | null;
+  /** Every individual run, so each can be inspected. chunkIndex null is the unchanged prompt. */
+  trials: { chunkIndex: number | null; ok: boolean; passed: string[] }[];
   modelCalls: number;
   ms: number;
   model: string;
@@ -339,6 +384,22 @@ export interface ImproveRequest {
   failedCheckIds: string[];
   /** Edits already tried and rejected in this session, so they are not proposed again. */
   rejected: string[];
+  /** Goal-review concerns about the current answer, in plain words. */
+  concerns?: string[];
+}
+
+/** One complete candidate prompt. A proposal until it has been tested. */
+export interface Proposal {
+  prompt: string;
+  /** What changed and why, in plain words. */
+  changes: string[];
+  /** Details from the original prompt that the rewrite dropped and were put back. */
+  restored: string[];
+  /** Specifics the rewrite added without support, replaced by a visible placeholder. */
+  placeholders: string[];
+  /** Confirmed details from the goal that the original prompt never told the model. */
+  gap: string[];
+  source: "model" | "rules";
 }
 
 export interface ImproveStep {

@@ -14,13 +14,13 @@ export async function POST(request: Request): Promise<NextResponse<ImproveStep |
   if (!allowRequest(request, "improve", 30)) {
     return NextResponse.json({ error: "Too many requests from this device. Wait a few minutes and try again." }, { status: 429 });
   }
-  let body: { taskId?: unknown; prompt?: unknown; custom?: unknown; output?: unknown; failedCheckIds?: unknown; rejected?: unknown };
+  let body: { taskId?: unknown; prompt?: unknown; custom?: unknown; output?: unknown; failedCheckIds?: unknown; rejected?: unknown; concerns?: unknown };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 });
   }
-  const resolved = resolveTask(body.taskId, body.custom);
+  const resolved = resolveTask(body.taskId, body.custom, (body as { long?: unknown }).long);
   if ("error" in resolved) return NextResponse.json({ error: resolved.error }, { status: resolved.status });
   const problem = validatePrompt(body.prompt);
   if (problem) return NextResponse.json({ error: problem }, { status: 400 });
@@ -33,6 +33,7 @@ export async function POST(request: Request): Promise<NextResponse<ImproveStep |
       typeof body.output === "string" ? body.output : "",
       strings(body.failedCheckIds, 12),
       strings(body.rejected, 8),
+      strings(body.concerns, 4),
     );
     return NextResponse.json(step);
   } catch (err) {

@@ -292,7 +292,7 @@ import { normalizeText } from "@/lib/checks";
 import { compareChecks, conclusion, diffWords, sameContext } from "@/lib/compare";
 import { alternativesFor, findContradiction } from "@/lib/custom";
 import { labelFromChanges } from "@/lib/engine";
-import { guardRevision, improveStep } from "@/lib/improve";
+import { guardRevision, improveStep, safeguard } from "@/lib/improve";
 import { buildModelInput } from "@/lib/model";
 
 const buildGoalOnly = (goal: string) => {
@@ -508,30 +508,35 @@ describe("revision usefulness", () => {
 });
 
 describe("improve and test", () => {
-  it("blocks drift, invented facts, and no-op edits", () => {
-    const original = "Summarize this feedback for our CFO under 60 words.";
+  it("refuses a no-op, replaces unsupported specifics with a placeholder, and restores dropped details", () => {
+    const original = "Summarize this feedback for our CFO under 60 words. Mention the $1,200 refund cost by Friday.";
     expect(guardRevision(cfo, original, original)).toMatch(/identical/);
-    expect(guardRevision(cfo, original, "Write a poem about spring.")).toMatch(/dropped too much/);
-    expect(guardRevision(cfo, original, `${original} Mention the $9,999 penalty.`)).toMatch(/9,999/);
-    expect(guardRevision(cfo, original, `${original} Say that a decision is needed by Friday.`)).toBeNull();
+    const invented = safeguard(cfo, original, `${original} Mention the $9,999 penalty due March 9.`);
+    expect(invented.placeholders).toEqual(expect.arrayContaining(["$9,999", "March 9"]));
+    expect(invented.prompt).not.toContain("9,999");
+    expect(invented.prompt).toContain("[add your own detail here]");
+    const dropped = safeguard(cfo, original, "Summarize this customer feedback for our CFO.");
+    expect(dropped.restored).toEqual(expect.arrayContaining(["$1,200", "Friday", "60 words"]));
+    expect(dropped.prompt).toMatch(/Keep these details from my original request: .*\$1,200/);
+    expect(safeguard(cfo, original, `${original} Say that a decision is needed by Friday.`)).toEqual({ prompt: `${original} Say that a decision is needed by Friday.`, restored: [], placeholders: [] });
   });
 
-  it("proposes one edit, tests it fresh in the same context, and does not repeat a rejected edit", async () => {
+  it("proposes a complete candidate, tests it fresh in the same context, and the result improves", async () => {
     const start = await runTask(cfo, "Summarize this feedback for our CFO.");
     const failedIds = start.checks.filter((c) => !c.pass).map((c) => c.id);
     const step = await improveStep(cfo, start.prompt, start.output, failedIds, []);
     expect(step.blocked).toBeNull();
     expect(step.run!.contextId).toBe(start.contextId);
-    expect(step.run!.prompt).not.toBe(start.prompt);
-    expect(compareChecks(start.checks, step.run!.checks).improved.length).toBeGreaterThan(0);
-    const again = await improveStep(cfo, start.prompt, start.output, failedIds, [step.candidate!.change]);
-    expect(again.candidate!.change).not.toBe(step.candidate!.change);
+    expect(step.run!.prompt.startsWith(start.prompt)).toBe(true);
+    const d = compareChecks(start.checks, step.run!.checks);
+    expect(d.improved.length).toBeGreaterThan(0);
+    expect(d.regressed.length).toBe(0);
   });
 
   it("stops when nothing is failing", async () => {
     const step = await improveStep(cfo, STRONG["cfo-summary"], "fine", [], []);
     expect(step.run).toBeNull();
-    expect(step.blocked).toMatch(/already passes/);
+    expect(step.blocked).toMatch(/nothing to revise/);
   });
 });
 
@@ -549,7 +554,7 @@ describe("suggest checks handles ordinary language", () => {
     const r = await suggestChecks("Under 80 words, include March 3, and use one paragraph.");
     expect(r.status).toBe("suggestions");
     expect(r.checks).toEqual(expect.arrayContaining([{ kind: "maxWords", value: 80 }, { kind: "includes", text: "March 3" }, { kind: "singleParagraph" }]));
-    expect(r.clarify).toBeNull();
+    expect(r.questions).toEqual([]);
   });
 
   it("mixed goals keep the mechanical part and hand the rest to goal review", async () => {
@@ -559,18 +564,19 @@ describe("suggest checks handles ordinary language", () => {
     expect(r.qualitative).toEqual(expect.arrayContaining(["clear", "with examples"]));
   });
 
-  it("a vague goal gets a clarifying question and options, never a dead end", async () => {
+  it("a vague study goal gets a useful question, never a dead end and never a category quiz", async () => {
     const r = await suggestChecks("A comprehensive study plan");
     expect(r.status).toBe("needs_clarification");
     expect(r.checks).toEqual([]);
-    expect(r.clarify!.question).toMatch(/Comprehensive/);
-    expect(r.clarify!.options.length).toBeGreaterThanOrEqual(2);
+    expect(r.questions.map((q) => q.id)).toEqual(["topics"]);
+    expect(r.qualitative).toContain("comprehensive");
   });
 
-  it("explaining a topic does not turn the topic into a required string", async () => {
+  it("explaining a topic does not turn the topic into a required string, and asks nothing pointless", async () => {
     const r = await suggestChecks("Explain L\u2019H\u00f4pital\u2019s rule with examples");
     expect(r.checks).toEqual([]);
-    expect(r.status).toBe("needs_clarification");
+    expect(r.status).toBe("ready");
+    expect(r.questions).toEqual([]);
     expect(r.qualitative).toContain("with examples");
   });
 
@@ -589,7 +595,11 @@ describe("suggest checks handles ordinary language", () => {
     expect(wrapped!.qualitative).toEqual(["clear"]);
     expect(parseSuggestion("I could not do that.")).toBeNull();
     expect(parseSuggestion("{not json}")).toBeNull();
-    expect(parseSuggestion('{"checks":[],"clarify":{"question":"What length?","options":["Short","Long"]}}')!.clarify).toEqual({ question: "What length?", options: ["Short", "Long"] });
+    const q = parseSuggestion('{"checks":[],"questions":[{"id":"Exam Date","question":"When is it?","type":"date"},{"question":"Pick one","type":"choice","options":["A"]},{"type":"text"}]}')!.questions;
+    expect(q).toEqual([
+      { id: "exam_date", question: "When is it?", type: "date", options: undefined, why: "" },
+      { id: "pick_one", question: "Pick one", type: "text", options: undefined, why: "" },
+    ]);
   });
 
   it("a provider failure is an error, not an unsupported goal", async () => {
@@ -604,10 +614,10 @@ describe("suggest checks handles ordinary language", () => {
 
   it("an unreadable model reply still keeps what the user stated outright", async () => {
     const model = await import("@/lib/model");
-    const spy = vi.spyOn(model, "generateText").mockResolvedValue({ text: "Sorry, here you go!", model: "x", mock: false });
+    const spy = vi.spyOn(model, "generateText").mockResolvedValue({ text: "Sorry, here you go!", model: "x", mock: false, complete: true });
     try {
       expect((await suggestChecks("Under 80 words and one paragraph.")).checks.length).toBe(2);
-      await expect(suggestChecks("A comprehensive study plan")).rejects.toThrow(/could not be read/);
+      await expect(suggestChecks("Make it really nice")).rejects.toThrow(/could not be read/);
     } finally {
       spy.mockRestore();
     }
@@ -708,15 +718,12 @@ describe("calculus scenario: topic versus exact string", () => {
 });
 
 describe("helper guardrails beyond numbers", () => {
-  it("blocks an invented name and allows one that is already in the user's inputs", () => {
-    const original = "Summarize this feedback for our CFO under 60 words.";
-    expect(guardRevision(cfo, original, `${original} Address it to Margaret personally.`)).toMatch(/Margaret/);
-    expect(guardRevision(cfo, original, `${original} Address it to Dana.`)).toBeNull();
-  });
-
-  it("a revision that loses the audience is caught as drift", () => {
-    const original = "Summarize this customer feedback for our CFO in one plain paragraph under 60 words.";
-    expect(guardRevision(cfo, original, "Under 60 words.")).toMatch(/dropped too much/);
+  it("whether the task survived is left to the goal review, not to word overlap", async () => {
+    // High overlap, different task: the vendor prompt shares most words with an on-task one.
+    const vendor = "Write to our billing vendor asking them to refund the $1,200 by Friday in one plain paragraph under 60 words.";
+    expect((await reviewGoal(cfo, vendor, "x")).status).toBe("concerns");
+    // Low overlap, same task: a full rephrase is not blocked for being different.
+    expect(guardRevision(cfo, "Summarize this.", "Give our CFO a short digest of what customers said this month.")).toBeNull();
   });
 
   it("the X-ray says when one instruction carries several requirements", async () => {

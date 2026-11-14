@@ -8,6 +8,7 @@ import { segmentPrompt, withoutChunk } from "./segment";
 import type { AblationLabel, AblationResult, CheckChange, CheckResult, RunResult, Task, XrayResult } from "./types";
 
 export const MAX_PROMPT_CHARS = 2000;
+const TASK_VERB = /\b(summari[sz]e|write|draft|list|explain|create|give|make|plan|compose|generate|extract|describe|outline|prepare|produce|tell|translate|rewrite|review|help)\b/i;
 
 export function validatePrompt(prompt: unknown): string | null {
   if (typeof prompt !== "string" || prompt.trim().length === 0) return "Write a prompt first.";
@@ -24,9 +25,10 @@ export async function runTask(task: Task, prompt: string): Promise<RunResult> {
   const friction = detectFriction(prompt, chunks);
   const context = contextFor(task);
   return {
+    complete: reply.complete,
     contextId: context.id,
     context,
-    diagnoses: diagnose(task, prompt, reply.text, checks, friction),
+    diagnoses: diagnose(task, prompt, reply.text, checks, friction, reply.complete),
     taskId: task.id,
     prompt,
     output: reply.text,
@@ -111,6 +113,8 @@ export async function xrayTask(
   const outcomes = await mapLimit(jobs, maxParallel, async (job) => {
     try {
       const reply = await generate(task, job.prompt);
+      // A cut-off answer cannot be scored fairly, so it is treated like a failed request, not a low score.
+      if (!reply.complete) return { job, ok: false as const, reason: "an answer was cut off at the output limit" };
       return { job, ok: true as const, ...scoreOutput(task, reply.text) };
     } catch (err) {
       return { job, ok: false as const, reason: err instanceof Error ? err.message : "failed" };
@@ -129,6 +133,8 @@ export async function xrayTask(
   const passes = (list: typeof good, id: string) => list.filter((o) => o.checks.find((c) => c.id === id)?.pass).length;
   const baselineChecks = task.checks.map((c) => ({ id: c.id, label: c.label, passes: passes(baselineRuns, c.id) }));
 
+  // The instruction that states the task: the first one with a task verb. Removing it tests "no task at all".
+  const coreIndex = chunks.find((c) => TASK_VERB.test(c.text))?.index ?? -1;
   const ablations: AblationResult[] = targets.map((chunk) => {
     const mine = good.filter((o) => o.job.chunkIndex === chunk.index);
     const scores = mine.map((o) => o.score);
@@ -150,6 +156,7 @@ export async function xrayTask(
       changes,
       // When one instruction carries several requirements, removing it cannot say which part did what.
       bundled: task.checks.filter((c) => promptMentions(c.promptCue, chunk.text)).map((c) => c.label),
+      core: chunk.index === coreIndex,
       validRuns: mine.length,
       failedRuns: runs - mine.length,
     };
@@ -177,6 +184,7 @@ export async function xrayTask(
     baselineChecks,
     failedCalls,
     caution,
+    trials: outcomes.map((o) => ({ chunkIndex: o.job.chunkIndex, ok: o.ok, passed: o.ok ? o.checks.filter((c) => c.pass).map((c) => c.id) : [] })),
     total: task.checks.length,
     runsPerChunk: runs,
     ablations,

@@ -3,12 +3,15 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { compareChecks, conclusion, diffWords, sameContext } from "@/lib/compare";
-import { alternativesFor, describeCheck, findContradiction, findTensions } from "@/lib/custom";
+import { MATCH_POLICY, alternativesFor, describeCheck, findContradiction, findTensions } from "@/lib/custom";
 import { CUSTOM_TASK_ID } from "@/lib/types";
 import type {
   AblationLabel,
   AblationResult,
   ApiError,
+  BriefAnswer,
+  ClarifyQuestion,
+  Proposal,
   CheckCategory,
   CheckResult,
   CustomCheck,
@@ -32,6 +35,8 @@ interface RunEntry {
   /** Where this run came from. A recorded replay is never mixed with live results. */
   role: "original" | "revision" | "helper" | "recorded";
   review: { status: "running" | "done" | "error"; data: GoalReview | null; error: string | null };
+  /** One complete candidate prompt, proposed after the analysis. A proposal until it is tested. */
+  proposal: { status: "idle" | "running" | "done" | "error"; data: Proposal | null; needsChoice: string | null; note: string | null; error: string | null };
   /** Checks passed in fresh confirmation runs of this same prompt. */
   confirmations: number[];
   xray: XrayResult | null;
@@ -54,7 +59,7 @@ interface HelperAttempt {
   n: number;
   change: string;
   reason: string;
-  outcome: "kept" | "rejected" | "blocked" | "tradeoff" | "choice";
+  outcome: "kept" | "rejected" | "blocked" | "tradeoff" | "choice" | "decision";
   why: string;
   prompt?: string;
 }
@@ -74,7 +79,7 @@ interface Finding {
 }
 
 const KIND_OPTIONS: { kind: CustomCheckKind; label: string; input: "number" | "text" | "none"; placeholder?: string }[] = [
-  { kind: "includes", label: "Contains exact text", input: "text", placeholder: "a phrase, name, or number" },
+  { kind: "includes", label: "Contains the wording", input: "text", placeholder: "a phrase, name, or number" },
   { kind: "excludes", label: "Does not mention", input: "text", placeholder: "a phrase" },
   { kind: "maxWords", label: "Word limit", input: "number", placeholder: "60" },
   { kind: "startsWith", label: "Starts with", input: "text", placeholder: "Subject:" },
@@ -83,7 +88,7 @@ const KIND_OPTIONS: { kind: CustomCheckKind; label: string; input: "number" | "t
   { kind: "listOnly", label: "A numbered list, nothing else", input: "none" },
 ];
 
-const CATEGORY: Record<CheckCategory, string> = { exact_text: "exact text", text_pattern: "text pattern", length: "length", format: "format" };
+const CATEGORY: Record<CheckCategory, string> = { exact_text: "wording", text_pattern: "text pattern", length: "length", format: "format" };
 
 const REVIEW_TITLE: Record<GoalFindingKind, string> = {
   task_mismatch: "Possible task mismatch",
@@ -99,8 +104,8 @@ const RULE_TITLE = {
   missing_instruction: "Missing instruction",
   present_not_followed: "Instruction present but not followed",
   conflict: "Conflicting instructions",
-  possible_checker_mismatch: "The check may be too literal",
-  insufficient_evidence: "Not enough evidence",
+  possible_checker_mismatch: "Wording or topic?",
+  insufficient_evidence: "Cannot tell: the answer was cut off",
 } as const;
 
 const XLABEL: Record<AblationLabel, { text: string; icon: string }> = {
@@ -207,7 +212,8 @@ function ReviewBox({ entry }: { entry: RunEntry }) {
           {data.summary}
         </p>
       )}
-      {data && data.status === "concerns" && <p className="fine">Details are under &quot;What to fix&quot;. This is separate from the rule-based checks and does not change them.</p>}
+      {data && data.partial && <p className="note">Partial review: only part of the answer could be read, so nothing is reported as missing.</p>}
+      {data && data.status === "concerns" && <p className="fine">Details are under &quot;What to change&quot;. This is separate from the rule-based checks and does not change them.</p>}
     </div>
   );
 }
@@ -251,6 +257,33 @@ function Xray({ entry, onRun }: { entry: RunEntry; onRun: () => void }) {
       return { id: check.id, label: check.label, line };
     });
   }, [xray]);
+
+  /** One finding first. Everything else is detail the reader can open. */
+  const lead = useMemo(() => {
+    if (!xray) return "";
+    const R = xray.baselineValidRuns;
+    if (R === 0) return "No run of the unchanged prompt returned a complete answer, so there is nothing to compare against.";
+    const tested = xray.ablations.filter((a) => a.validRuns > 0);
+    const drop = (a: AblationResult) => a.changes.reduce((sum, c) => sum + (c.baselinePasses / R - c.ablatedPasses / a.validRuns), 0);
+    const helpful = tested.filter((a) => a.label === "helpful").sort((x, y) => drop(y) - drop(x))[0];
+    if (helpful) {
+      const lost = helpful.changes.filter((c) => c.ablatedPasses / helpful.validRuns < c.baselinePasses / R).map((c) => c.label);
+      return `The clearest result: without "${helpful.text}", ${lost.length === 1 ? `the check "${lost[0]}" passed` : `${lost.length} checks passed`} less often.${helpful.core ? " That instruction states the task itself, so this shows the task was lost, not that the wording is special." : ""}`;
+    }
+    const harmful = tested.find((a) => a.label === "possibly_harmful" || a.label === "tradeoff");
+    if (harmful) return `The clearest result: without "${harmful.text}", at least one check passed more often. That is an observation about these checks, not advice to delete it.`;
+    return "Removing any single instruction did not change these checks in these runs. That is not proof the instructions do nothing. The checks may not measure what they affect.";
+  }, [xray]);
+
+  const trialRows = useMemo(() => {
+    if (!xray) return [];
+    const groups = new Map<number | null, { ok: boolean; passed: string[] }[]>();
+    for (const t of xray.trials) groups.set(t.chunkIndex, [...(groups.get(t.chunkIndex) ?? []), t]);
+    return [...groups.entries()].map(([index, runs]) => ({
+      name: index === null ? "Unchanged prompt" : `Without "${result.chunks.find((c) => c.index === index)?.text ?? "?"}"`,
+      runs,
+    }));
+  }, [xray, result]);
 
   return (
     <section className="panel solid xray" aria-label="X-ray">
@@ -296,6 +329,10 @@ function Xray({ entry, onRun }: { entry: RunEntry; onRun: () => void }) {
 
       {xray && (
         <>
+          <p className="headline">{lead}</p>
+          <p className="fine">
+            These are fresh runs. The answer shown above is one separate run and is not counted here, so its score can differ from the {xray.baselineValidRuns} reruns of the unchanged prompt.
+          </p>
           {xray.caution && <p className="notice caution">{xray.caution}</p>}
           {xray.failedCalls > 0 && (
             <p className="notice caution">
@@ -349,6 +386,7 @@ function Xray({ entry, onRun }: { entry: RunEntry; onRun: () => void }) {
                       {a.label === "possibly_harmful" || a.label === "tradeoff" ? " This is an observation, not a recommendation to delete it." : ""}
                       {a.failedRuns > 0 && a.validRuns > 0 ? ` ${a.failedRuns} request${a.failedRuns === 1 ? "" : "s"} failed and ${a.failedRuns === 1 ? "is" : "are"} left out.` : ""}
                     </p>
+                    {a.core && <p className="row-note">This instruction states the task. Removing it tests whether the task survives, not whether the wording helps. It is never a candidate for deletion.</p>}
                     {a.bundled.length > 1 && (
                       <p className="row-note">
                         This instruction carries several requirements together ({a.bundled.join("; ")}), so the test cannot say which words did what.
@@ -360,6 +398,40 @@ function Xray({ entry, onRun }: { entry: RunEntry; onRun: () => void }) {
               );
             })}
           </ol>
+
+          <details className="howto">
+            <summary>Every run, check by check</summary>
+            <div className="trials-wrap">
+              <table className="trials">
+                <thead>
+                  <tr>
+                    <th scope="col">Prompt version</th>
+                    <th scope="col">Run</th>
+                    {xray.baselineChecks.map((c) => (
+                      <th scope="col" key={c.id}>
+                        {c.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {trialRows.flatMap((g) =>
+                    g.runs.map((t, i) => (
+                      <tr key={`${g.name}-${i}`}>
+                        <th scope="row">{i === 0 ? g.name : ""}</th>
+                        <td>{i + 1}</td>
+                        {t.ok ? (
+                          xray.baselineChecks.map((c) => <td key={c.id}>{t.passed.includes(c.id) ? "pass" : "fail"}</td>)
+                        ) : (
+                          <td colSpan={xray.baselineChecks.length}>no usable answer (request failed or answer cut off), left out</td>
+                        )}
+                      </tr>
+                    )),
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </details>
 
           <details className="howto">
             <summary>What this can and cannot tell you</summary>
@@ -515,6 +587,12 @@ export default function Workbench() {
   const [material, setMaterial] = useState("");
   const [checks, setChecks] = useState<DraftCheck[]>([]);
   const [proposal, setProposal] = useState<SuggestResult | null>(null);
+  // The structured brief: answers to clarifying questions, kept apart from the goal text. Null means skipped.
+  const [brief, setBrief] = useState<BriefAnswer[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [coverage, setCoverage] = useState<string[]>([]);
+  const [long, setLong] = useState(false);
+  const [candidates, setCandidates] = useState<Record<number, string>>({});
   const [suggesting, setSuggesting] = useState(false);
   const [suggestError, setSuggestError] = useState<string | null>(null);
   const [advanced, setAdvanced] = useState(false);
@@ -525,11 +603,12 @@ export default function Workbench() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [undo, setUndo] = useState<string[]>([]);
-  const [edits, setEdits] = useState<Record<string, string>>({});
   const [showAll, setShowAll] = useState(false);
   const [helper, setHelper] = useState<{ active: boolean; attempts: HelperAttempt[]; summary: string | null; calls: number }>({ active: false, attempts: [], summary: null, calls: 0 });
   const entryId = useRef(1);
   const requestSeq = useRef(0);
+  /** Set synchronously, so two clicks in the same frame cannot both start a run. */
+  const busy = useRef(false);
   const controller = useRef<AbortController | null>(null);
   const cancelled = useRef(false);
   const editor = useRef<HTMLTextAreaElement>(null);
@@ -550,17 +629,18 @@ export default function Workbench() {
   const complete = checks.filter(isComplete);
   const contradiction = useMemo(() => (complete.length === checks.length ? findContradiction(complete.map(strip)) : null), [complete, checks]);
   const tensions = useMemo(() => (mode === "own" && !ackTension ? findTensions(goal, prompt, complete.map(strip)) : []), [mode, ackTension, goal, prompt, complete]);
-  const ownReady = complete.length === checks.length && !contradiction && (goal.trim().length > 0 || complete.length > 0);
+  const ownReady = complete.length === checks.length && !contradiction && (goal.trim().length > 0 || complete.length > 0 || coverage.length > 0);
 
   /** Identifies the evaluation inputs in the form right now. The server issues the authoritative context id. */
   const formKey = useMemo(
-    () => (mode === "own" ? `own:${JSON.stringify([goal.trim(), material.trim(), complete.map(strip)])}` : `example:${taskId}`),
-    [mode, goal, material, complete, taskId],
+    () => (mode === "own" ? `own:${JSON.stringify([goal.trim(), material.trim(), complete.map(strip), brief, coverage, long])}` : `example:${taskId}:${long}`),
+    [mode, goal, material, complete, brief, coverage, long, taskId],
   );
   const runs = experiments[formKey] ?? [];
   const latest = runs[runs.length - 1];
   const previous = latest
-    ? [...runs].slice(0, -1).reverse().find((r) => r.role !== "recorded" && sameContext(r.result, latest.result) && r.result.prompt.trim() !== latest.result.prompt.trim())
+    ? // A cut-off answer is never one side of a comparison: its misses may only be the missing end.
+      [...runs].slice(0, -1).reverse().find((r) => r.role !== "recorded" && r.result.complete && latest.result.complete && sameContext(r.result, latest.result) && r.result.prompt.trim() !== latest.result.prompt.trim())
     : undefined;
   const earlier = Object.entries(experiments).filter(([key, list]) => key !== formKey && list.length > 0);
   const dirty = !!latest && latest.result.prompt.trim() !== prompt.trim();
@@ -569,8 +649,8 @@ export default function Workbench() {
   const setPrompt = useCallback((value: string) => setPrompts((p) => ({ ...p, [promptKey]: value })), [promptKey]);
 
   const payloadFor = useCallback(
-    (text: string) => (mode === "own" ? { taskId: CUSTOM_TASK_ID, prompt: text, custom: { goal: goal.trim(), material, checks: complete.map(strip) } } : { taskId, prompt: text }),
-    [mode, goal, material, complete, taskId],
+    (text: string) => (mode === "own" ? { taskId: CUSTOM_TASK_ID, prompt: text, long, custom: { goal: goal.trim(), material, checks: complete.map(strip), brief, coverage } } : { taskId, prompt: text, long }),
+    [mode, goal, material, complete, brief, coverage, long, taskId],
   );
 
   const addEntry = useCallback((key: string, entry: RunEntry) => setExperiments((all) => ({ ...all, [key]: [...(all[key] ?? []), entry] })), []);
@@ -584,6 +664,7 @@ export default function Workbench() {
     result,
     role,
     review: { status: review ? "done" : "running", data: review, error: null },
+    proposal: { status: "idle", data: null, needsChoice: null, note: null, error: null },
     confirmations: [],
     xray: null,
     xrayStatus: "idle",
@@ -591,19 +672,46 @@ export default function Workbench() {
     recordedAt: null,
   });
 
-  /** Goal review runs after the answer is already on screen. It never changes a check result. */
-  const startReview = async (key: string, entry: RunEntry, body: ReturnType<typeof payloadFor>) => {
+  /** After the answer is on screen: the goal review, then one complete proposed prompt. Neither changes a check result. */
+  const analyze = async (key: string, entry: RunEntry, body: ReturnType<typeof payloadFor>) => {
+    let review: GoalReview | null = null;
     try {
-      const review = await postJson<GoalReview>("/api/review", { ...body, output: entry.result.output });
+      review = await postJson<GoalReview>("/api/review", { ...body, output: entry.result.output, complete: entry.result.complete });
       patchEntry(key, entry.id, { review: { status: "done", data: review, error: null } });
     } catch (err) {
       patchEntry(key, entry.id, { review: { status: "error", data: null, error: err instanceof Error ? err.message : "unknown error" } });
+    }
+    await propose(key, entry, body, review);
+  };
+
+  const propose = async (key: string, entry: RunEntry, body: ReturnType<typeof payloadFor>, review: GoalReview | null) => {
+    // A cut-off answer is not a basis for rewriting the prompt.
+    if (!entry.result.complete) return;
+    patchEntry(key, entry.id, { proposal: { status: "running", data: null, needsChoice: null, note: null, error: null } });
+    try {
+      const reply = await postJson<{ proposal: Proposal | null; needsChoice: string | null; note: string | null }>("/api/propose", {
+        ...body,
+        output: entry.result.output,
+        failedCheckIds: entry.result.checks.filter((c) => !c.pass).map((c) => c.id),
+        concerns: (review?.findings ?? []).map((f) => f.what),
+        reviewStatus: review?.status ?? "unavailable",
+      });
+      patchEntry(key, entry.id, { proposal: { status: "done", data: reply.proposal, needsChoice: reply.needsChoice, note: reply.note, error: null } });
+    } catch (err) {
+      patchEntry(key, entry.id, { proposal: { status: "error", data: null, needsChoice: null, note: null, error: err instanceof Error ? err.message : "unknown error" } });
     }
   };
 
   /** Runs a prompt. The result is always filed under the context it was sent with, never the one on screen later. */
   const run = async (text = prompt) => {
+    // One request at a time: a double click must not start two runs.
+    if (busy.current || running || helper.active) return;
     if (!canRun && text === prompt) return;
+    busy.current = true;
+    if (text !== prompt) {
+      setUndo((stack) => [...stack, prompt]);
+      setPrompt(text);
+    }
     const sentKey = formKey;
     const body = payloadFor(text);
     const seq = ++requestSeq.current;
@@ -616,7 +724,7 @@ export default function Workbench() {
       const result = await postJson<RunResult>("/api/run", body, controller.current.signal);
       const entry = makeEntry(result, (experiments[sentKey] ?? []).some((e) => e.role !== "recorded") ? "revision" : "original");
       addEntry(sentKey, entry);
-      void startReview(sentKey, entry, body);
+      void analyze(sentKey, entry, body);
       try {
         localStorage.setItem(STORE, JSON.stringify({ key: sentKey, result, savedAt: new Date().toISOString() }));
       } catch {
@@ -625,13 +733,17 @@ export default function Workbench() {
     } catch (err) {
       if ((err as Error).name !== "AbortError" && seq === requestSeq.current) setError(err instanceof Error ? err.message : "Something went wrong. Try again.");
     } finally {
-      if (seq === requestSeq.current) setRunning(false);
+      if (seq === requestSeq.current) {
+        setRunning(false);
+        busy.current = false;
+      }
     }
   };
 
   const cancel = () => {
     cancelled.current = true;
     requestSeq.current++;
+    busy.current = false;
     controller.current?.abort();
     setRunning(false);
   };
@@ -672,9 +784,13 @@ export default function Workbench() {
     setProposal(null);
     setSuggestError(null);
     setKeptExact([]);
+    setBrief([]);
+    setDrafts({});
+    setCoverage([]);
+    setLong(false);
+    setCandidates({});
     setAckTension(false);
     setUndo([]);
-    setEdits({});
     setError(null);
     resetHelper();
     try {
@@ -684,16 +800,6 @@ export default function Workbench() {
     }
   };
 
-  const applyEdit = (text: string, how: "add" | "replace") => {
-    const clean = text.trim();
-    if (!clean || prompt.includes(clean)) return;
-    setUndo((stack) => [...stack, prompt]);
-    // "Replace" swaps only the opening sentence, which is where the task and recipient are stated.
-    // The rest of the prompt is kept, and Undo restores the original.
-    const rest = prompt.trim().split(/(?<=[.!?])\s+/).slice(1).join(" ");
-    setPrompt(how === "replace" ? `${clean} ${rest}`.trim() : `${prompt.trim()} ${clean}`.trim());
-    editor.current?.focus();
-  };
 
   const undoLast = () =>
     setUndo((stack) => {
@@ -710,6 +816,7 @@ export default function Workbench() {
     const MAX_EDITS = 3;
     const start = latest;
     let base = latest.result;
+    let baseReview = latest.review.data;
     let baseEntryId = latest.id;
     const rejected: string[] = [];
     const attempts: HelperAttempt[] = [];
@@ -721,16 +828,13 @@ export default function Workbench() {
       setHelper({ active: false, attempts: [], calls: 0, summary: `A choice is yours first. ${tensions[0]} Decide that in the setup above. Then the helper can work toward what you actually want.` });
       return;
     }
-    if (drift(start.review.data)) {
-      setHelper({ active: false, attempts: [], calls: 0, summary: "A choice is yours first. The goal review suggests the prompt asks for something different from the goal. Decide that under \"What to fix\" before fine-tuning the wording." });
-      return;
-    }
     setHelper({ active: true, attempts: [], summary: null, calls: 0 });
     try {
       for (let n = 1; n <= MAX_EDITS && !cancelled.current; n++) {
         const failed = base.checks.filter((c) => !c.pass).map((c) => c.id);
-        if (failed.length === 0) break;
-        const step = await postJson<ImproveStep>("/api/improve", { ...payloadFor(base.prompt), output: base.output, failedCheckIds: failed, rejected });
+        const concerns = (baseReview?.findings ?? []).map((f) => f.what);
+        if (failed.length === 0 && concerns.length === 0) break;
+        const step = await postJson<ImproveStep>("/api/improve", { ...payloadFor(base.prompt), output: base.output, failedCheckIds: failed, rejected, concerns });
         calls += step.modelCalls;
         if (cancelled.current) break;
         if (step.needsChoice) {
@@ -755,9 +859,19 @@ export default function Workbench() {
         const drifted = drift(step.review);
         const gained = d.improved.map((c) => c.label).join("; ");
         const lost = d.regressed.map((c) => c.label).join("; ");
+        const before = baseReview?.findings.length ?? 0;
+        const after = step.review?.findings.length ?? 0;
+        if (d.improved.length === 0 && d.regressed.length === 0 && step.review && !step.review.mock && !drifted && after < before) {
+          // Nothing mechanical moved. Fewer review concerns is a reason to look, not proof of a better answer.
+          attempts.push({ n, change, reason: step.candidate?.reason ?? "", outcome: "decision", why: `No rule-based check changed. The goal review raised ${before} concern${before === 1 ? "" : "s"} before and ${after} after (model-assisted, not proof). Compare the two answers and decide.`, prompt: step.run.prompt });
+          setHelper({ active: true, attempts: [...attempts], summary: null, calls });
+          stopNote = "Your decision. The candidate is listed below and was not applied.";
+          break;
+        }
         if (d.improved.length > 0 && d.regressed.length === 0 && !drifted) {
           attempts.push({ n, change, reason: step.candidate?.reason ?? "", outcome: "kept", why: `Gained: ${gained}. No check regressed${step.review && !step.review.mock ? ", and the goal review raised no drift concern" : ""}.` });
           base = step.run;
+          baseReview = step.review;
           const entry = makeEntry(step.run, "helper", step.review);
           baseEntryId = entry.id;
           addEntry(key, entry);
@@ -810,16 +924,24 @@ export default function Workbench() {
     }
   };
 
-  const suggest = async () => {
+  const suggest = async (answers: BriefAnswer[] = brief) => {
     setSuggestError(null);
     setSuggesting(true);
     try {
-      setProposal(await postJson<SuggestResult>("/api/suggest", { goal }));
+      setProposal(await postJson<SuggestResult>("/api/suggest", { goal, prompt, material, answers }));
     } catch (err) {
       setSuggestError(err instanceof Error ? err.message : "The suggestion request failed.");
     } finally {
       setSuggesting(false);
     }
+  };
+
+  /** Stores an answer in its own field. The goal text is never edited. Answering again replaces the earlier answer. */
+  const answer = (q: Pick<ClarifyQuestion, "id" | "question" | "type">, value: string | null) => {
+    const next = [...brief.filter((b) => b.id !== q.id), { id: q.id, question: q.question, type: q.type, value }];
+    setBrief(next);
+    setProposal((p) => (p ? { ...p, questions: p.questions.filter((x) => x.id !== q.id) } : p));
+    return next;
   };
 
   const accept = (list: CustomCheck[]) => {
@@ -835,6 +957,8 @@ export default function Workbench() {
     setGoal(OWN_SAMPLE.goal);
     setMaterial(OWN_SAMPLE.material);
     setChecks([]);
+    setBrief([]);
+    setCoverage([]);
     setProposal(null);
     setSuggestError(null);
   };
@@ -860,7 +984,32 @@ export default function Workbench() {
   // ---- findings: both layers in one prioritized list, goal concerns first ----
   const findings: Finding[] = [];
   if (latest) {
+    const rules: Finding[] = latest.result.diagnoses.map((d) => {
+      // A wording question stays a question until the user says the wording is deliberate.
+      const question = d.kind === "possible_checker_mismatch" && !keptExact.includes(d.checkLabel);
+      const confirmed = d.kind === "possible_checker_mismatch" && !question;
+      return {
+        id: `rule-${latest.id}-${d.checkId}`,
+        source: "rule" as const,
+        title: confirmed ? "Exact wording confirmed by you, not in the answer" : RULE_TITLE[d.kind],
+        what: d.observation,
+        evidence: [d.evidence],
+        why: confirmed ? "You confirmed this exact wording is required. Telling the AI to include it is the direct thing to try." : d.interpretation,
+        edit: null,
+        editMode: "add" as const,
+        alternatives: question ? (d.alternatives ?? []) : undefined,
+        checkLabel: d.checkLabel,
+      };
+    });
+    const keys = (text: string) => new Set(text.toLowerCase().match(/\$?\d[\d,.]*|[a-z]{5,}/g) ?? []);
     for (const [i, f] of (latest.review.data?.findings ?? []).entries()) {
+      // The same concern from both layers becomes one finding, not two near-identical cards.
+      const mine = keys(f.what);
+      const twin = rules.find((r) => [...keys(r.checkLabel ?? "")].filter((k) => mine.has(k)).length >= 2);
+      if (twin) {
+        twin.evidence.push("The goal review (model-assisted) raised the same point.");
+        continue;
+      }
       findings.push({
         id: `review-${latest.id}-${i}`,
         source: "review",
@@ -868,48 +1017,39 @@ export default function Workbench() {
         what: f.what,
         evidence: [f.promptEvidence ? `Your prompt says: "${f.promptEvidence}"` : "", f.answerEvidence ? `The answer says: "${f.answerEvidence}"` : ""].filter(Boolean),
         why: f.why,
-        edit: f.suggestedEdit,
-        editMode: f.editMode,
+        edit: null,
+        editMode: "add",
       });
     }
     for (const [i, note] of tensions.entries()) {
       findings.push({ id: `tension-${i}`, source: "setup", title: "A check may work against your goal", what: note, evidence: [], why: "A result can pass this check and still not be what you asked for.", edit: null, editMode: "add" });
     }
-    for (const d of latest.result.diagnoses) {
-      // An exact-text question stays a question until the user says the wording is deliberate.
-      const question = d.kind === "possible_checker_mismatch" && !keptExact.includes(d.checkLabel);
-      const confirmed = d.kind === "possible_checker_mismatch" && !question;
-      findings.push({
-        id: `rule-${latest.id}-${d.checkId}`,
-        source: "rule",
-        title: confirmed ? "Exact text confirmed by you, not in the answer" : RULE_TITLE[d.kind],
-        what: d.observation,
-        evidence: [d.evidence],
-        why: confirmed ? "You confirmed this exact wording is required. Telling the AI to include it is the direct thing to try." : d.interpretation,
-        edit: question ? null : d.suggestedEdit,
-        editMode: "add",
-        alternatives: question ? (d.alternatives ?? []) : undefined,
-        checkLabel: d.checkLabel,
-      });
-    }
+    findings.push(...rules);
   }
   const visible = showAll ? findings : findings.slice(0, 3);
+  const candidate = latest?.proposal.data ? (candidates[latest.id] ?? latest.proposal.data.prompt) : "";
   const reviewDone = latest && latest.review.status !== "running";
   const diagnosis = !latest
     ? ""
-    : findings.length > 0
-      ? findings[0].source === "review"
-        ? `${latest.result.total > 0 ? `${passed(latest.result)}. Separately, the goal review raised a concern: ` : "The goal review raised a concern: "}${findings[0].what}`
-        : findings[0].source === "setup"
-          ? "Before reading the result: one of your checks may work against your own goal."
-          : findings[0].alternatives
-            ? "One check may be too literal. Decide what you meant before changing the prompt."
-            : findings[0].what
-      : !reviewDone
-        ? "Rule-based checks are done. The goal review is still reading the answer."
-        : latest.result.total === 0
-          ? "This answer is unscored, and the goal review found nothing to flag. Read it and decide."
-          : "Every rule-based check passed, and the goal review found nothing to flag. There is nothing to fix from what was checked.";
+    : !latest.result.complete
+      ? "The answer was cut off before it finished, so it cannot be judged fairly yet."
+      : findings.length > 0
+        ? findings[0].source === "review"
+          ? `${latest.result.total > 0 ? `${passed(latest.result)}. Separately, the goal review raised a concern: ` : "The goal review raised a concern: "}${findings[0].what}`
+          : findings[0].source === "setup"
+            ? "Before reading the result: one of your checks may work against your own goal."
+            : findings[0].alternatives
+              ? "One check may be too literal. Decide what you meant before changing the prompt."
+              : latest.result.total - latest.result.score > 1
+                ? `The answer missed ${latest.result.total - latest.result.score} of ${latest.result.total} rule-based checks: ${latest.result.checks.filter((c) => !c.pass).map((c) => c.label).join("; ")}.`
+                : findings[0].what
+        : !reviewDone
+          ? "Rule-based checks are done. The goal review is still reading the answer."
+          : latest.proposal.data
+            ? "Nothing was flagged in the answer, but your prompt does not tell the AI what your goal says. The AI only sees the prompt."
+            : latest.result.total === 0
+              ? "This answer is unscored, and the goal review found nothing to flag. Read it and decide."
+              : "Every rule-based check passed, and the goal review found nothing to flag. There is nothing to fix from what was checked.";
 
   const notes = (latest?.result.friction ?? []).filter((f) => f.category !== "persona");
 
@@ -941,7 +1081,7 @@ export default function Workbench() {
             </button>
           ) : (
             <button className="btn primary" onClick={() => run()} disabled={!canRun}>
-              {latest ? (dirty ? "Test revision" : "Run again") : "Run"}
+              {latest ? (dirty ? "Test my edited prompt" : "Run again") : "Run"}
             </button>
           )}
         </span>
@@ -1041,7 +1181,7 @@ export default function Workbench() {
             <p className="fine">In your own words: who it is for, what it should be, anything it must include or avoid.</p>
             <textarea id="goal" className="goal-input" value={goal} maxLength={600} onChange={(e) => setGoal(e.target.value)} placeholder="A study plan for my calculus midterm that I can follow over five days, with practice problems." />
             <div className="actions">
-              <button className="btn small" onClick={suggest} disabled={suggesting || goal.trim().length === 0}>
+              <button className="btn small" onClick={() => suggest()} disabled={suggesting || goal.trim().length === 0}>
                 {suggesting ? "Reading your goal" : proposal ? "Review again" : "Review proposed evaluation"}
               </button>
               <span className="fine">Optional. You can also just run.</span>
@@ -1050,7 +1190,7 @@ export default function Workbench() {
             {suggestError && (
               <div className="notice error" role="alert">
                 {suggestError}{" "}
-                <button className="link" onClick={suggest}>
+                <button className="link" onClick={() => suggest()}>
                   Retry
                 </button>{" "}
                 <button className="link" onClick={() => setAdvanced(true)}>
@@ -1064,6 +1204,11 @@ export default function Workbench() {
                 <p className="label">
                   Proposed evaluation <span className="chip model">{proposal.mock ? "offline rules" : "model-assisted"}</span>
                 </p>
+                {proposal.known.length > 0 && (
+                  <p className="note">
+                    Already understood, so not asked: {proposal.known.join(" ")}
+                  </p>
+                )}
                 {proposal.checks.length > 0 && (
                   <>
                     <p className="fine">These can be checked by a rule. Nothing is used until you accept it.</p>
@@ -1090,25 +1235,73 @@ export default function Workbench() {
                   </>
                 )}
                 {proposal.warning && <p className="notice caution">{proposal.warning}</p>}
-                {proposal.qualitative.length > 0 && (
-                  <p className="note">
-                    Not checkable by a rule, so left to the goal review: {proposal.qualitative.join(", ")}.
-                  </p>
-                )}
-                {proposal.clarify && (
-                  <div className="clarify">
-                    <p>{proposal.clarify.question}</p>
-                    <div className="actions">
-                      {proposal.clarify.options.map((o) => (
-                        <button key={o} className="btn small" onClick={() => { setGoal((g) => `${g.trim().replace(/[.;]$/, "")}; ${o.charAt(0).toLowerCase()}${o.slice(1)}`); setProposal(null); }}>
-                          {o}
+                {proposal.qualitative.length > 0 && <p className="note">Not checkable by a rule, so left to the goal review: {proposal.qualitative.join(", ")}.</p>}
+                {proposal.questions.map((q) => (
+                  <div className="clarify" key={q.id}>
+                    <label htmlFor={`q-${q.id}`}>{q.question}</label>
+                    {q.why && <p className="fine">{q.why}</p>}
+                    {q.type === "choice" && q.options ? (
+                      <div className="actions">
+                        {q.options.map((o) => (
+                          <button key={o} className="btn small" onClick={() => answer(q, o)}>
+                            {o}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="suggest-row">
+                        {q.type === "text" ? (
+                          <textarea id={`q-${q.id}`} className="answer-input" value={drafts[q.id] ?? ""} maxLength={600} onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))} />
+                        ) : (
+                          <input id={`q-${q.id}`} type={q.type} value={drafts[q.id] ?? ""} onChange={(e) => setDrafts((d) => ({ ...d, [q.id]: e.target.value }))} />
+                        )}
+                        <button className="btn small" disabled={!(drafts[q.id] ?? "").trim()} onClick={() => answer(q, (drafts[q.id] ?? "").trim())}>
+                          Save
                         </button>
-                      ))}
-                    </div>
-                    <p className="fine">These are possible meanings, not facts about your situation. Picking one adds it to your goal, where you can edit it. You can also run as is: the answer will be reviewed against your goal and left unscored.</p>
+                      </div>
+                    )}
+                    <button className="link" onClick={() => answer(q, null)}>
+                      {q.type === "date" ? "I do not have a date. Make it an undated Day 1, Day 2 plan." : "Skip. I do not know, or it does not matter."}
+                    </button>
                   </div>
-                )}
-                {proposal.checks.length === 0 && !proposal.clarify && proposal.qualitative.length === 0 && <p className="note">Nothing left to review. Your accepted checks are listed below.</p>}
+                ))}
+                {proposal.questions.length > 0 && <p className="fine">Answers are stored as their own details, not written into your goal. You can run without answering.</p>}
+                {proposal.status === "ready" && proposal.checks.length === 0 && <p className="note">Nothing else to ask. You can run now. The answer will be read against your goal.</p>}
+              </div>
+            )}
+
+            {(brief.length > 0 || coverage.length > 0) && (
+              <div className="brief-list">
+                <p className="label">Details you confirmed</p>
+                <ul>
+                  {brief.map((b) => (
+                    <li key={b.id}>
+                      <span>
+                        {b.question} <b>{b.value === null ? "Skipped. Nothing will be invented for this." : b.value}</b>
+                      </span>
+                      <button
+                        className="link"
+                        onClick={() => {
+                          setBrief((list) => list.filter((x) => x.id !== b.id));
+                          setDrafts((d) => ({ ...d, [b.id]: b.value ?? "" }));
+                          setProposal((p) => ({ ...(p ?? { status: "needs_clarification", checks: [], qualitative: [], known: [], warning: null, model: "", mock: false }), questions: [{ id: b.id, question: b.question, type: b.type, why: "" }, ...(p?.questions ?? [])] }) as SuggestResult);
+                        }}
+                      >
+                        Change
+                      </button>
+                    </li>
+                  ))}
+                  {coverage.map((c) => (
+                    <li key={c}>
+                      <span>
+                        Topic to cover, reviewed not scored: <b>{c}</b>
+                      </span>
+                      <button className="link" onClick={() => setCoverage((list) => list.filter((x) => x !== c))}>
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 
@@ -1120,9 +1313,15 @@ export default function Workbench() {
                   {complete.length === 0 ? "none yet. The answer will be unscored." : `${complete.length}. ${complete.map((c) => describeCheck(strip(c))).join("; ")}.`}
                 </li>
                 <li>
-                  <b>Goal review:</b> {goal.trim() ? "the answer is read against your goal above. Model-assisted, shown separately." : "needs a goal above."}
+                  <b>Goal review:</b> {goal.trim() || coverage.length > 0 ? "the answer is read against your goal and confirmed details. Model-assisted, shown separately." : "needs a goal above."}
+                </li>
+                <li>
+                  <b>The AI receives:</b> your prompt{material.trim() ? " and your notes" : ""}. It does not receive your goal or the details above. A proposed revision carries them into the prompt, where you can see them.
                 </li>
               </ul>
+              <label className="check-row">
+                <input type="checkbox" checked={long} onChange={(e) => setLong(e.target.checked)} /> Allow long answers (a larger output limit, for guides and plans). Changing this starts a new experiment.
+              </label>
               {tensions.map((t) => (
                 <p key={t} className="notice caution">
                   {t}{" "}
@@ -1167,7 +1366,10 @@ export default function Workbench() {
                       </div>
                       {check.kind === "includes" && check.text && (
                         <p className="fine">
-                          Checks that this exact text appears. It cannot tell whether the topic is covered or explained correctly.
+                          Checks that this wording appears. {MATCH_POLICY} It cannot tell whether a topic is covered or explained correctly.{" "}
+                          <button className="link" onClick={() => { setCoverage((list) => (list.includes(check.text!.trim()) ? list : [...list, check.text!.trim()])); setChecks((list) => list.filter((c) => c.key !== check.key)); }}>
+                            I mean the topic, not the wording
+                          </button>
                           {(check.alternatives ?? []).length > 0 && ` Also accepted: ${(check.alternatives ?? []).map((a) => `"${a}"`).join(", ")}.`}
                           {offers.map((alt) => (
                             <button key={alt} className="link" onClick={() => updateCheck(check.key, { alternatives: [...(check.alternatives ?? []), alt] })}>
@@ -1221,7 +1423,7 @@ export default function Workbench() {
               <div className="notice caution">
                 You have edited the prompt since this result. What you see below is for the earlier version.{" "}
                 <button className="link" onClick={() => run()} disabled={!canRun}>
-                  Test revision
+                  Test my edited prompt
                 </button>
               </div>
             )}
@@ -1234,21 +1436,48 @@ export default function Workbench() {
                   {latest.result.mock ? "Offline mock model" : latest.result.model}, {(latest.result.ms / 1000).toFixed(1)}s
                 </span>
               </div>
+              {!latest.result.complete && (
+                <div className="notice caution" role="status">
+                  <b>This answer is incomplete.</b> The AI stopped at the output limit before finishing. Anything missing from the end may simply not have been written, so it is not counted against your prompt.{" "}
+                  {long ? (
+                    "Long answers are already on. Ask for something shorter, or split the task."
+                  ) : (
+                    <button className="link" onClick={() => setLong(true)}>
+                      Allow long answers and start again
+                    </button>
+                  )}
+                </div>
+              )}
               <div className="result-grid">
-                <Answer text={latest.result.output} />
+                <div>
+                  <Answer text={latest.result.output} label={latest.result.complete ? "AI answer" : "AI answer (cut off)"} />
+                  <details className="howto">
+                    <summary>What the AI received</summary>
+                    <p>
+                      Exactly your prompt{latest.result.context.material ? ", followed by your reference material" : ""}. It did not receive the goal, the checks, or any confirmed details. If the goal asks for something the prompt never says, the AI could not have known.
+                    </p>
+                    <pre>{latest.result.prompt}{latest.result.context.material ? `\n\n---\n${latest.result.context.material}` : ""}</pre>
+                  </details>
+                </div>
                 <div className="judgement">
                   <p className="label">Rule-based checks</p>
                   {latest.result.total === 0 ? (
                     <p className="note unscored">None were set, so this answer is unscored. No number is shown because nothing mechanical was measured.</p>
                   ) : (
                     <>
-                      <p className="met">
-                        <span className="met-n">
-                          {latest.result.score} <span>of {latest.result.total}</span>
-                        </span>{" "}
-                        passed
-                      </p>
-                      <Checks checks={latest.result.checks} />
+                      {latest.result.complete ? (
+                        <p className="met">
+                          <span className="met-n">
+                            {latest.result.score} <span>of {latest.result.total}</span>
+                          </span>{" "}
+                          passed
+                        </p>
+                      ) : (
+                        <p className="note unscored">Not counted. The answer was cut off, so a check that needs the missing part would fail for the wrong reason. What the visible part shows is listed below for reference only.</p>
+                      )}
+                      <div className={latest.result.complete ? undefined : "provisional"}>
+                        <Checks checks={latest.result.checks} />
+                      </div>
                       <p className="fine">This counts fixed rules passed. It does not say whether the answer is good or serves your goal.</p>
                     </>
                   )}
@@ -1257,18 +1486,69 @@ export default function Workbench() {
               </div>
             </section>
 
-            <section className="panel solid fixes" aria-label="What to fix">
+            <section className="panel solid fixes" aria-label="What to change">
               <div className="panel-head">
-                <h3>What to fix</h3>
+                <h3>What to change</h3>
               </div>
               <p className="headline">{diagnosis}</p>
 
-              {visible.length > 0 && (
-                <ul className="fix-list">
-                  {visible.map((f) => {
-                    const value = edits[f.id] ?? f.edit ?? "";
-                    const applied = !!value && prompt.includes(value.trim());
-                    return (
+              {latest.role !== "recorded" && latest.proposal.status === "running" && (
+                <p className="status" role="status">
+                  <span className="pulse" aria-hidden="true" />
+                  Writing a revised prompt for you to review.
+                </p>
+              )}
+              {latest.proposal.status === "error" && (
+                <div className="notice error" role="alert">
+                  A revised prompt could not be written: {latest.proposal.error} Your result above is unaffected.{" "}
+                  <button className="link" onClick={() => propose(formKey, latest, payloadFor(latest.result.prompt), latest.review.data)}>
+                    Try again
+                  </button>
+                </div>
+              )}
+              {latest.proposal.needsChoice && <p className="notice caution">{latest.proposal.needsChoice} The choice is under &quot;Evidence&quot; below.</p>}
+              {latest.proposal.status === "done" && !latest.proposal.data && !latest.proposal.needsChoice && findings.length === 0 && latest.proposal.note && !latest.proposal.note.startsWith("Every rule-based check passes") && <p className="note">{latest.proposal.note}</p>}
+
+              {latest.proposal.data && (
+                <div className="candidate">
+                  <label htmlFor="candidate" className="label big">
+                    Proposed prompt <span className="chip src-setup">a proposal, not tested yet</span>
+                  </label>
+                  <textarea id="candidate" value={candidate} maxLength={2000} spellCheck={false} onChange={(e) => setCandidates((all) => ({ ...all, [latest.id]: e.target.value }))} />
+                  {latest.proposal.data.changes.length > 0 && (
+                    <ul className="changes">
+                      {latest.proposal.data.changes.map((c) => (
+                        <li key={c}>{c}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {latest.proposal.data.gap.length > 0 && (
+                    <p className="note">
+                      Your goal mentions {latest.proposal.data.gap.join(", ")}, which your original prompt never told the AI. The first answer could not have used {latest.proposal.data.gap.length === 1 ? "it" : "them"}.
+                    </p>
+                  )}
+                  {latest.proposal.data.restored.length > 0 && <p className="note">Kept from your original prompt, so nothing was lost in the rewrite: {latest.proposal.data.restored.join(", ")}.</p>}
+                  {latest.proposal.data.placeholders.length > 0 && (
+                    <p className="notice caution">
+                      The rewrite added details you never gave ({latest.proposal.data.placeholders.join(", ")}). They were replaced with &quot;[add your own detail here]&quot;. Fill those in or delete them before testing.
+                    </p>
+                  )}
+                  <div className="next">
+                    <button className="btn primary" onClick={() => run(candidate)} disabled={running || helper.active || !candidate.trim() || candidate.trim() === latest.result.prompt.trim()}>
+                      Test revised prompt
+                    </button>
+                    <span className="fine">Runs it under the same goal and checks, then shows both prompts and both answers.</span>
+                  </div>
+                </div>
+              )}
+
+              {findings.length > 0 && (
+                <details className="evidence-list" open={!latest.proposal.data && latest.proposal.status !== "running"}>
+                  <summary>
+                    Evidence: {findings.length} finding{findings.length === 1 ? "" : "s"}
+                  </summary>
+                  <ul className="fix-list">
+                    {visible.map((f) => (
                       <li key={f.id}>
                         <p className="fix-kind">
                           <span className={`chip src-${f.source}`}>{f.source === "review" ? "Goal review, model-assisted" : f.source === "rule" ? "Rule-based check" : "Your setup"}</span> {f.title}
@@ -1291,91 +1571,68 @@ export default function Workbench() {
                           <dt>{f.source === "review" ? "Why it may matter (suggested interpretation)" : "Why it matters"}</dt>
                           <dd>{f.why}</dd>
                         </dl>
-                        {f.edit !== null && (
-                          <div className="fix-edit">
-                            <label className="label" htmlFor={`edit-${f.id}`}>
-                              Edit to try (you can change it)
-                            </label>
-                            <div className="suggest-row">
-                              <input id={`edit-${f.id}`} type="text" value={value} maxLength={300} onChange={(e) => setEdits((all) => ({ ...all, [f.id]: e.target.value }))} />
-                              <button className="btn small" onClick={() => applyEdit(value, f.editMode)} disabled={applied || !value.trim()}>
-                                {applied ? "In your draft" : f.editMode === "replace" ? "Replace my opening sentence" : "Add to draft"}
-                              </button>
-                            </div>
-                            <p className="fine">
-                              {applied ? "In your draft. Not tested yet." : "Not tested. It only changes your draft, and you can undo it."}
-                              {f.editMode === "replace" && !applied ? " It replaces only your first sentence and keeps the rest." : ""}
-                            </p>
-                          </div>
-                        )}
                         {f.alternatives && f.checkLabel && (
                           <div className="fix-alt">
-                            <p>Is that exact spelling what you need?</p>
+                            <p>Do you need this exact wording, or did you mean the topic?</p>
                             <div className="actions">
                               <button className="btn small" onClick={() => setKeptExact((list) => [...list, f.checkLabel!])}>
-                                Yes, keep it exact
+                                Exact wording, keep the check
                               </button>
                               {mode === "own" && (
-                                <button className="btn small" onClick={() => setChecks((list) => list.filter((c) => describeCheck(strip(c)) !== f.checkLabel))}>
-                                  Remove this check
+                                <button
+                                  className="btn small"
+                                  onClick={() => {
+                                    const hit = checks.find((c) => c.kind === "includes" && describeCheck(strip(c)) === f.checkLabel);
+                                    if (hit?.text) setCoverage((list) => (list.includes(hit.text!) ? list : [...list, hit.text!]));
+                                    setChecks((list) => list.filter((c) => describeCheck(strip(c)) !== f.checkLabel));
+                                  }}
+                                >
+                                  The topic. Review it, do not score it
                                 </button>
                               )}
                               {mode === "own" &&
                                 f.alternatives.map((alt) => (
-                                  <button
-                                    key={alt}
-                                    className="btn small"
-                                    onClick={() => setChecks((list) => list.map((c) => (c.kind === "includes" && describeCheck(strip(c)) === f.checkLabel ? { ...c, alternatives: [...(c.alternatives ?? []), alt] } : c)))}
-                                  >
+                                  <button key={alt} className="btn small" onClick={() => setChecks((list) => list.map((c) => (c.kind === "includes" && describeCheck(strip(c)) === f.checkLabel ? { ...c, alternatives: [...(c.alternatives ?? []), alt] } : c)))}>
                                     Also accept &quot;{alt}&quot;
                                   </button>
                                 ))}
                             </div>
-                            <p className="fine">Changing or removing a check changes the evaluation, so it starts a new experiment. A score that rises for that reason is not a prompt improvement.</p>
+                            <p className="fine">Your answer is remembered for this check. Changing a check starts a new experiment, because a score that rises when the check gets looser is not a prompt improvement.</p>
                           </div>
                         )}
                       </li>
-                    );
-                  })}
-                </ul>
-              )}
-              {findings.length > 3 && (
-                <button className="link" onClick={() => setShowAll((s) => !s)}>
-                  {showAll ? "Show the top 3 only" : `Show all ${findings.length} findings`}
-                </button>
-              )}
-
-              {findings.length > 0 && (
-                <div className="next">
-                  <button className="btn primary" onClick={() => run()} disabled={!dirty || !canRun}>
-                    Test revision
-                  </button>
-                  <span className="fine">{dirty ? "Runs your edited prompt under the same goal and checks." : "Apply an edit above, or change the prompt yourself. Then test it."}</span>
-                </div>
+                    ))}
+                  </ul>
+                  {findings.length > 3 && (
+                    <button className="link" onClick={() => setShowAll((x) => !x)}>
+                      {showAll ? "Show the top 3 only" : `Show all ${findings.length} findings`}
+                    </button>
+                  )}
+                </details>
               )}
 
-              {latest.result.checks.some((c) => !c.pass) && latest.role !== "recorded" && (
-                <div className="helper">
-                  <p className="label">Or let PromptProof try</p>
+              {latest.role !== "recorded" && latest.result.complete && (findings.length > 0 || helper.attempts.length > 0) && (
+                <details className="helper">
+                  <summary>Or let PromptProof keep trying on its own</summary>
                   <p className="fine">
-                    Tries one small edit at a time. Keeps it only if a check improves, none regresses, and the goal review raises no drift concern. Stops after 3 edits. It cannot change your goal or checks, and it asks you before forcing an exact phrase.
+                    It proposes a revision, tests it, and repeats up to 3 times. It keeps a revision only when a rule-based check improves and none gets worse. When only the goal review changes, or there is a trade, it shows you the candidate and you decide. It cannot change your goal or checks.
                   </p>
                   {helper.active ? (
                     <button className="btn small" onClick={cancel}>
                       Stop
                     </button>
                   ) : (
-                    <button className="btn small" onClick={improve} disabled={running || dirty}>
+                    <button className="btn small" onClick={improve} disabled={running}>
                       Improve and test
                     </button>
                   )}
                   {helper.active && (
                     <p className="status" role="status">
                       <span className="pulse" aria-hidden="true" />
-                      Testing edit {helper.attempts.length + 1} of up to 3.
+                      Testing revision {helper.attempts.length + 1} of up to 3.
                     </p>
                   )}
-                </div>
+                </details>
               )}
               {(helper.attempts.length > 0 || helper.summary) && (
                 <div className="helper-log">
@@ -1383,13 +1640,13 @@ export default function Workbench() {
                   <ol>
                     {helper.attempts.map((a) => (
                       <li key={a.n} className={a.outcome}>
-                        <b>{a.outcome === "kept" ? "Kept" : a.outcome === "rejected" ? "Rejected" : a.outcome === "blocked" ? "Blocked before testing" : a.outcome === "tradeoff" ? "Tradeoff, your choice" : "Your choice"}.</b> {a.change}
+                        <b>{a.outcome === "kept" ? "Kept" : a.outcome === "rejected" ? "Rejected" : a.outcome === "blocked" ? "Not tested" : a.outcome === "tradeoff" ? "Tradeoff, your choice" : a.outcome === "decision" ? "Your decision" : "Your choice"}.</b> {a.change}
                         <small>
                           {a.reason} {a.why}
                         </small>
-                        {a.outcome === "tradeoff" && a.prompt && (
-                          <button className="link" onClick={() => { setUndo((stack) => [...stack, prompt]); setPrompt(a.prompt!); }}>
-                            Use this prompt as my draft anyway
+                        {(a.outcome === "tradeoff" || a.outcome === "decision") && a.prompt && (
+                          <button className="link" onClick={() => run(a.prompt!)}>
+                            Test this candidate so I can compare the answers
                           </button>
                         )}
                       </li>

@@ -1,6 +1,6 @@
 import type { CheckCategory, CheckKind, CheckResult, CheckSpec, Task } from "./types";
 
-export const SCORER_VERSION = "2026-11-14.2";
+export const SCORER_VERSION = "2026-11-14.3";
 
 /**
  * Text is normalized the same way before every check, so a curly apostrophe or a
@@ -107,6 +107,24 @@ export function runCheck(spec: CheckSpec, rawOutput: string): CheckResult {
       const found = sentence.match(regex(spec));
       const preview = sentence.length > 70 ? `${sentence.slice(0, 67)}...` : sentence;
       return { ...base, pass: !!found, detail: `first sentence: "${preview}"` };
+    }
+    case "mentionsFirst": {
+      // The narrow mechanical test behind "X is the first issue named":
+      // the first sentence names X, nothing from the rival subject comes before it, and it is not negated.
+      const contentLines = nonEmptyLines(output);
+      while (contentLines.length > 1 && /:\s*$/.test(contentLines[0])) contentLines.shift();
+      const body = contentLines.join("\n").replace(LIST_MARKER, "");
+      const sentence = firstSentence(body);
+      const preview = sentence.length > 70 ? `${sentence.slice(0, 67)}...` : sentence;
+      const hit = sentence.match(regex(spec));
+      if (!hit) return { ...base, pass: false, detail: `not named in the first sentence: "${preview}"` };
+      const before = sentence.slice(0, hit.index ?? 0);
+      if (/\b(no|not|never|without|few|zero|aside from|apart from|other than|rather than)\b[^.,;]{0,30}$/i.test(before)) {
+        return { ...base, pass: false, detail: `named in the first sentence, but negated or set aside: "${preview}"` };
+      }
+      const rival = spec.rival ? before.match(new RegExp(spec.rival, "i")) : null;
+      if (rival) return { ...base, pass: false, detail: `"${rival[0]}" comes before "${hit[0]}" in the first sentence: "${preview}"` };
+      return { ...base, pass: true, detail: `first sentence: "${preview}"` };
     }
     case "startsWith": {
       const found = output.trimStart().match(regex(spec));

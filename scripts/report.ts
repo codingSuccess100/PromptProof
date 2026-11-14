@@ -10,19 +10,21 @@
 // only to show the report shape.
 // 5. Suggest checks on six ordinary-language goals.
 // 6. Goal review on the vendor-message case, an on-task case, and the calculus case.
-// A full run makes about 65 small model calls.
+// 7. Release journeys A to G: each one is PASS, FAIL, or BLOCKED (the request itself failed).
+// A full run makes about 80 small model calls.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { runTask, xrayTask } from "../src/lib/engine";
 import { FALLBACK_MODELS, buildModelInput, configuredModel, droppedSettings, rawCall } from "../src/lib/model";
-import { buildCustomTask } from "../src/lib/custom";
+import { buildCustomTask, resolveTask } from "../src/lib/custom";
+import { scoreOutput } from "../src/lib/checks";
+import { proposeRevision } from "../src/lib/improve";
 import { reviewGoal } from "../src/lib/review";
 import { suggestChecks } from "../src/lib/suggest";
 import { getTask } from "../src/lib/tasks";
 import type { RunResult, XrayResult } from "../src/lib/types";
 
 const REPORT_PATH = "promptproof-report.md";
-const API = "https://generativelanguage.googleapis.com/v1beta";
 
 const WEAK_PROMPT = "Summarize this feedback.";
 const STRONG_PROMPT =
@@ -276,8 +278,8 @@ async function suggestSection() {
   for (const goal of cases) {
     try {
       const r = await suggestChecks(goal);
-      if (r.checks.length === 0 && !r.clarify) deadEnds++;
-      out(`| ${cell(goal)} | ${r.status}${r.warning ? " (contradiction flagged)" : ""} | ${cell(r.checks.map((c) => `${c.kind}${c.value ? " " + c.value : ""}${c.text ? " \"" + c.text + "\"" : ""}`).join("; ")) || "none"} | ${cell(r.qualitative.join(", ")) || "none"} | ${cell(r.clarify?.question ?? "") || "none"} |`);
+      if (r.checks.length === 0 && r.questions.length === 0 && r.qualitative.length === 0 && r.status !== "ready") deadEnds++;
+      out(`| ${cell(goal)} | ${r.status}${r.warning ? " (contradiction flagged)" : ""} | ${cell(r.checks.map((c) => `${c.kind}${c.value ? " " + c.value : ""}${c.text ? " \"" + c.text + "\"" : ""}`).join("; ")) || "none"} | ${cell(r.qualitative.join(", ")) || "none"} | ${cell(r.questions.map((q) => `${q.id} (${q.type}): ${q.question}`).join("; ")) || "none"} |`);
     } catch (err) {
       failures++;
       out(`| ${cell(goal)} | REQUEST FAILED | | | ${cell(err instanceof Error ? err.message : "error")} |`);
@@ -317,6 +319,105 @@ async function reviewSection() {
   out("The review is model-assisted and can be wrong. Read the three rows and judge whether the findings are sensible.");
   out();
   verdicts.push({ name: "Goal review flags the vendor prompt and the odd calculus criteria, and not the on-task prompt", pass: mock ? null : done === cases.length ? asExpected === cases.length : null, note: `${asExpected} of ${cases.length} as expected, ${done} completed` });
+}
+
+async function journeySection() {
+  out("## 7. Release journeys");
+  out();
+  out("Each row states what should happen, written from the task and not from the code. BLOCKED means the request failed, so the journey was not judged.");
+  out();
+  out("| Journey | Expected | Observed | Result |");
+  out("|---|---|---|---|");
+  const row = async (id: string, expected: string, fn: () => Promise<{ pass: boolean; seen: string }>) => {
+    try {
+      const r = await fn();
+      out(`| ${id} | ${expected} | ${cell(r.seen)} | ${r.pass ? "PASS" : "FAIL"} |`);
+      verdicts.push({ name: `Journey ${id}`, pass: r.pass, note: r.seen });
+    } catch (err) {
+      const note = err instanceof Error ? err.message : "error";
+      out(`| ${id} | ${expected} | ${cell(note)} | BLOCKED |`);
+      verdicts.push({ name: `Journey ${id}`, pass: null, note: `blocked: ${note}` });
+    }
+  };
+  const own = (goal: string, checks: unknown[] = [], long = false) => {
+    const built = resolveTask("custom", { goal, material: "", checks }, long);
+    if (!("task" in built)) throw new Error(built.error);
+    return built.task;
+  };
+  const CALC_PROMPT = "i want to study for calc 3 midterm";
+  const CALC_GOAL = "I want a full study guide with dates on what to do each day.";
+
+  await row("A. Calculus clarification", "No question about what kind of subject it is. A date question typed as a date. At most 2 questions. Answering the date removes that question.", async () => {
+    const first = await suggestChecks(CALC_GOAL, { prompt: CALC_PROMPT });
+    const text = JSON.stringify(first.questions).toLowerCase();
+    const date = first.questions.find((q) => q.type === "date");
+    const second = await suggestChecks(CALC_GOAL, { prompt: CALC_PROMPT, answers: date ? [{ id: date.id, question: date.question, type: "date", value: "2026-12-04" }] : [] });
+    const repeated = date ? second.questions.some((q) => q.id === date.id || q.type === "date") : true;
+    return {
+      pass: !/school subject|standardized|certification/.test(text) && Boolean(date) && first.questions.length <= 2 && !repeated,
+      seen: `first: ${first.questions.map((q) => `${q.id} (${q.type})`).join(", ") || "no questions"}; after the date answer: ${second.questions.map((q) => `${q.id} (${q.type})`).join(", ") || "no questions"}`,
+    };
+  });
+
+  await row("B. Exact wording versus topic", "A required string is matched as whole words. \"Friday\" inside another word does not count, and an amount is never fuzzy.", async () => {
+    const t = own("Mention the deadline", [{ kind: "includes", text: "Friday" }, { kind: "includes", text: "$1,200" }]);
+    const hit = scoreOutput(t, "We need a decision by friday. Refunds cost $1,200.").score;
+    const miss = scoreOutput(t, "Fridays are busy. Refunds cost $1,2000.").score;
+    return { pass: hit === 2 && miss === 0, seen: `matching answer ${hit} of 2, near-miss answer ${miss} of 2 (no model call, this is the rule itself)` };
+  });
+
+  await row("C. CFO ordering", "\"Billing is the first issue named\" fails when delivery is named first, and passes on a live answer to the strong prompt.", async () => {
+    const check = (text: string) => scoreOutput(task!, text).checks.find((c) => c.id === "billing-first")!.pass;
+    const counter = check("Delivery delays and billing errors were the main issues.");
+    const run = await runTask(task!, STRONG_PROMPT);
+    const live = run.checks.find((c) => c.id === "billing-first")!.pass;
+    return { pass: !counter && live && run.complete, seen: `counterexample ${counter ? "passed (wrong)" : "failed (right)"}; live strong-prompt answer ${live ? "passed" : "failed"}: "${run.output.slice(0, 110)}"` };
+  });
+
+  await row("D. Qualitative-only improvement", "With zero rule-based checks, a goal concern still produces one complete revised prompt that keeps the subject and invents no date.", async () => {
+    const t = own(CALC_GOAL, [], true);
+    const run = await runTask(t, CALC_PROMPT);
+    const review = await reviewGoal(t, run.prompt, run.output, run.complete);
+    const concerns = review.findings.map((f) => f.what);
+    const p = await proposeRevision(t, CALC_PROMPT, run.output, [], concerns.length ? concerns : ["The answer is not a day-by-day guide."], []);
+    const text = p.proposal?.prompt ?? "";
+    const invented = /\b(20\d\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.? \d{1,2}\b/i.test(text);
+    return {
+      pass: Boolean(p.proposal) && /calc/i.test(text) && !invented,
+      seen: `review: ${review.status}, ${review.findings.length} finding(s), answer ${run.complete ? "complete" : "cut off"}; proposal (${p.proposal?.source ?? "none"}): "${text.slice(0, 220)}"`,
+    };
+  });
+
+  await row("E. All checks pass, wrong task", "The vendor-message prompt can pass rule-based checks, and the goal review still reports a concern.", async () => {
+    const VENDOR = "Write to our billing vendor asking them to refund the $1,200 from last month by Friday. Lead with the billing errors. One plain paragraph, no bullet points, under 60 words.";
+    const run = await runTask(task!, VENDOR);
+    const review = await reviewGoal(task!, run.prompt, run.output, run.complete);
+    return { pass: review.status === "concerns", seen: `rule-based ${run.score} of ${run.total}; goal review ${review.status}: ${review.findings[0]?.what ?? review.summary}` };
+  });
+
+  await row("F. Constraint-preserving revision", "The revised prompt keeps $1,200, Friday, and the CFO from the original, and adds no unsupported amount.", async () => {
+    const original = "Summarize this feedback for our CFO. Mention that refunds cost $1,200 last month and a decision is needed by Friday.";
+    const run = await runTask(task!, original);
+    const failed = run.checks.filter((c) => !c.pass).map((c) => c.id);
+    const p = await proposeRevision(task!, original, run.output, failed, [], []);
+    const text = p.proposal?.prompt ?? "";
+    const kept = ["$1,200", "Friday", "CFO"].filter((d) => text.includes(d));
+    const amounts = (text.match(/\$[\d,]+/g) ?? []).filter((a) => a !== "$1,200");
+    return {
+      pass: failed.length === 0 ? p.proposal === null || kept.length === 3 : kept.length === 3 && amounts.length === 0,
+      seen: `${failed.length} failed check(s); kept ${kept.join(", ") || "nothing"}; other amounts: ${amounts.join(", ") || "none"}; placeholders: ${p.proposal?.placeholders.length ?? 0}; restored: ${p.proposal?.restored.join(", ") || "none"}`,
+    };
+  });
+
+  await row("G. Truncated output", "A long answer under a tiny output limit is reported as incomplete, and the review of it is partial and claims nothing is missing.", async () => {
+    const t = { ...own("A complete worked guide to every integration technique, with full examples.", []), outputTokens: 60 };
+    const run = await runTask(t, "Write a complete worked guide to every integration technique in Calculus 2, with three full worked examples for each technique.");
+    const review = await reviewGoal(t, run.prompt, run.output, run.complete);
+    const absence = review.findings.filter((f) => f.kind === "missing_fact").length;
+    if (mock && process.env.MOCK_TRUNCATE !== "1") return { pass: run.complete, seen: "offline mock answers are short, so this only shows a complete answer is reported complete. The live run exercises the limit." };
+    return { pass: !run.complete && review.partial && absence === 0, seen: `answer ${run.complete ? "reported complete (wrong)" : "reported incomplete"}, ${run.output.length} characters; review partial: ${review.partial}; absence claims: ${absence}` };
+  });
+  out();
 }
 
 // ---------- main ----------
@@ -365,6 +466,7 @@ async function main() {
   await xraySection();
   await suggestSection();
   await reviewSection();
+  await journeySection();
 }
 
 main()

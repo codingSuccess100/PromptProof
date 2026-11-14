@@ -11,7 +11,7 @@ import type { ContextSnapshot, Task } from "./types";
 export function contextFor(task: Task): ContextSnapshot {
   const info = modelInfo();
   const model = info.mock ? info.model : configuredModel();
-  const settings = modelSettings();
+  const settings = modelSettings(task.outputTokens);
   const fingerprint = JSON.stringify({
     taskId: task.id,
     material: task.sourceMaterial,

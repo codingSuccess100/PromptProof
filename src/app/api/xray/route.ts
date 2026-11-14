@@ -20,7 +20,7 @@ export async function POST(request: Request): Promise<NextResponse<XrayResult | 
     return NextResponse.json({ error: "Invalid request." }, { status: 400 });
   }
 
-  const resolved = resolveTask(body.taskId, body.custom);
+  const resolved = resolveTask(body.taskId, body.custom, (body as { long?: unknown }).long);
   if ("error" in resolved) return NextResponse.json({ error: resolved.error }, { status: resolved.status });
   const { task } = resolved;
 

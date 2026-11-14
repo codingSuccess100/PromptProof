@@ -29,6 +29,8 @@ const INSTRUCTIONS = [
   '- "editMode": "replace" if that sentence should become the new opening of the prompt, otherwise "add".',
   "Do not add facts, names, dates, or numbers that are not in the goal, the prompt, or the reference material.",
   "Do not guess the user's deadline, level, or preferred length. Do not speculate about why the AI did something.",
+  "The AI that wrote the answer saw ONLY the prompt and the reference material. It never saw the goal. If the goal contains a detail the prompt never mentions, say that the prompt did not pass it on. Do not blame the answer for ignoring it.",
+  "If the goal lists something as not specified, the answer should not invent it, and a clearly labeled provisional outline is acceptable.",
   'Reply with JSON only: {"status":"aligned" or "concerns" or "unclear","summary":"one sentence","findings":[...]}',
 ].join("\n");
 
@@ -105,10 +107,14 @@ function mockReview(task: Task, prompt: string): Pick<GoalReview, "status" | "su
   return { status: "aligned", summary: "No mismatch found between the prompt and the exercise goal. (Offline mock: a simple wording check, not a real review.)", findings: [] };
 }
 
-export async function reviewGoal(task: Task, prompt: string, output: string): Promise<GoalReview> {
+const REVIEW_CHARS = 14000;
+
+export async function reviewGoal(task: Task, prompt: string, output: string, complete = true): Promise<GoalReview> {
+  // The reviewer must know when it is not seeing the whole answer, and so must the user.
+  const partial = !complete || output.length > REVIEW_CHARS;
   const started = Date.now();
   if (!task.goal.trim()) {
-    return { status: "unavailable", summary: "No goal was given, so there is nothing to review the answer against.", findings: [], model: "", mock: false, ms: 0 };
+    return { status: "unavailable", summary: "No goal was given, so there is nothing to review the answer against.", findings: [], partial: false, model: "", mock: false, ms: 0 };
   }
   const reply = await generateText(
     [
@@ -118,17 +124,24 @@ export async function reviewGoal(task: Task, prompt: string, output: string): Pr
       "<<<RULE-BASED CHECKS ALREADY APPLIED>>>",
       task.checks.length ? task.checks.map((c) => `- ${c.label}`).join("\n") : "(none)",
       "<<<REFERENCE MATERIAL GIVEN TO THE AI>>>",
-      task.sourceMaterial ? task.sourceMaterial.slice(0, 2500) : "(none)",
+      task.sourceMaterial ? task.sourceMaterial.slice(0, 6000) : "(none)",
       "<<<PROMPT>>>",
       prompt,
-      "<<<ANSWER>>>",
-      output.slice(0, 4000),
+      partial
+        ? "<<<ANSWER (INCOMPLETE: you are seeing only the first part. Do NOT report anything as missing or absent, because it may be in the part you cannot see. Only report problems visible in this part.)>>>"
+        : "<<<ANSWER>>>",
+      output.slice(0, REVIEW_CHARS),
       "<<<END>>>",
     ].join("\n"),
     { json: true },
   );
-  if (!reply) return { ...mockReview(task, prompt), model: "offline mock", mock: true, ms: Date.now() - started };
+  // Part of an answer can show a problem. It can never show that the whole answer is fine.
+  const hedge = <T extends Pick<GoalReview, "status" | "summary">>(r: T): T =>
+    partial && r.status === "aligned" ? { ...r, status: "unclear", summary: "Only part of the answer could be read, so the review cannot say whether it serves your goal." } : r;
+  if (!reply) return { ...hedge(mockReview(task, prompt)), partial, model: "offline mock", mock: true, ms: Date.now() - started };
   const parsed = parseReview(reply.text, prompt, output);
   if (!parsed) throw new Error("the review reply could not be read");
-  return { ...parsed, model: reply.model, mock: false, ms: Date.now() - started };
+  // Belt and braces: with partial input, an absence claim is dropped even if the reviewer made one.
+  const findings = partial ? parsed.findings.filter((f) => f.kind !== "missing_fact") : parsed.findings;
+  return { ...hedge({ ...parsed, findings, status: findings.length > 0 ? "concerns" : parsed.status === "concerns" ? "unclear" : parsed.status }), partial, model: reply.model, mock: false, ms: Date.now() - started };
 }
