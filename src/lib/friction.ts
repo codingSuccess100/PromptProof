@@ -16,12 +16,12 @@ interface Rule {
 const RULES: Rule[] = [
   {
     category: "persona",
-    categoryLabel: "Persona language",
+    categoryLabel: "Role or persona",
     pattern:
       /\b(?:you are|you're|act as|acting as|pretend (?:to be|you are)|imagine you are|as)\s+(?:an?|the|my)?\s*(?:[\w-]+\s+){0,3}?(?:expert|analyst|writer|assistant|consultant|professor|guru|specialist|copywriter|editor|strategist|engineer|genius)\b/i,
     explanation:
-      "A role can change tone, but it carries none of the facts the task needs. Check the X-ray to see whether it changed this result.",
-    suggestion: "Spend those words on the reader, the format, or a required detail.",
+      "A role is not a problem in itself. It can set tone, and it carries none of the facts the task needs. The X-ray shows whether it changed these checks.",
+    suggestion: "Keep it if the tone matters to you. If a required detail is missing, add that first.",
   },
   {
     category: "leading_assumption",
@@ -41,7 +41,7 @@ const RULES: Rule[] = [
   },
   {
     category: "emotionally_loaded",
-    categoryLabel: "Emotionally loaded wording",
+    categoryLabel: "Potentially loaded framing",
     pattern:
       /!{2,}|\b(?:asap|urgent(?:ly)?|desperate(?:ly)?|or else|i(?:'ll| will) (?:be|get) fired|life or death|please please|super important|extremely important|very very)\b|\b[A-Z]{4,}(?:\s+[A-Z]{2,})+\b/,
     explanation: "Pressure and emphasis tell the model how you feel, not what a good answer looks like.",
@@ -64,7 +64,7 @@ function findConflicts(prompt: string, chunks: PromptChunk[]): FrictionFinding[]
   const conflict = (phrase: string, explanation: string, suggestion: string, anchor: string) =>
     findings.push({
       category: "conflicting_instructions",
-      categoryLabel: "Conflicting instructions",
+      categoryLabel: "Conflicting constraints",
       phrase,
       explanation,
       suggestion,

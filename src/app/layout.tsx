@@ -5,7 +5,7 @@ import { APP_NAME, TAGLINE } from "@/lib/brand";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: APP_NAME,
+  title: { default: APP_NAME, template: `%s | ${APP_NAME}` },
   description: TAGLINE,
 };
 

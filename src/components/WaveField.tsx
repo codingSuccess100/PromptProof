@@ -60,7 +60,8 @@ function draw(ctx: CanvasRenderingContext2D, w: number, h: number, t: number, ba
   ctx.globalCompositeOperation = "source-over";
 }
 
-export default function WaveField() {
+/** `calm` is for working pages: a dim, even backdrop that stays out of the way of text. */
+export default function WaveField({ calm = false }: { calm?: boolean }) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
 
@@ -98,13 +99,27 @@ export default function WaveField() {
       last = now;
       draw(ctx, w, h, (now - origin) / 1000, small ? BANDS.slice(0, 3) : BANDS);
     };
+    let paused = false;
+    try {
+      paused = localStorage.getItem("promptproof:motion") === "paused";
+    } catch {
+      // Storage may be unavailable.
+    }
     const start = () => {
       cancelAnimationFrame(frame);
-      if (!reduced.matches && !document.hidden) frame = requestAnimationFrame(loop);
+      if (!reduced.matches && !document.hidden && !paused) frame = requestAnimationFrame(loop);
+    };
+    const onMotion = (event: Event) => {
+      paused = !!(event as CustomEvent<boolean>).detail;
+      start();
     };
 
     // Waves are strongest behind the hero and the closing call to action, and recede behind dense text.
     const onScroll = () => {
+      if (calm) {
+        holder.style.opacity = "0.16";
+        return;
+      }
       const y = window.scrollY;
       const vh = window.innerHeight;
       const max = document.documentElement.scrollHeight - vh;
@@ -114,7 +129,7 @@ export default function WaveField() {
     };
 
     const onMove = (event: PointerEvent) => {
-      if (reduced.matches) return;
+      if (reduced.matches || paused || calm) return;
       const dx = (event.clientX / window.innerWidth - 0.5) * -22;
       const dy = (event.clientY / window.innerHeight - 0.5) * -16;
       el.style.transform = `translate3d(${dx.toFixed(1)}px, ${dy.toFixed(1)}px, 0) scale(1.06)`;
@@ -127,6 +142,7 @@ export default function WaveField() {
     window.addEventListener("scroll", onScroll, { passive: true });
     document.addEventListener("visibilitychange", start);
     reduced.addEventListener("change", start);
+    window.addEventListener("promptproof:motion", onMotion);
     if (finePointer) window.addEventListener("pointermove", onMove, { passive: true });
     return () => {
       cancelAnimationFrame(frame);
@@ -134,12 +150,13 @@ export default function WaveField() {
       window.removeEventListener("scroll", onScroll);
       document.removeEventListener("visibilitychange", start);
       reduced.removeEventListener("change", start);
+      window.removeEventListener("promptproof:motion", onMotion);
       window.removeEventListener("pointermove", onMove);
     };
-  }, []);
+  }, [calm]);
 
   return (
-    <div className="backdrop" aria-hidden="true">
+    <div className={`backdrop${calm ? " calm" : ""}`} aria-hidden="true">
       <div className="backdrop-glow" />
       <div className="backdrop-waves" ref={wrap}>
         <canvas ref={canvas} />

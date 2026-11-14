@@ -205,5 +205,6 @@ export function toPublicTask(task: Task): PublicTask {
     situationCard: task.situationCard,
     sourceMaterial: task.sourceMaterial,
     checkCount: task.checks.length,
+    criteria: task.checks.map((c) => c.label),
   };
 }

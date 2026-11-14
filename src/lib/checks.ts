@@ -1,4 +1,37 @@
-import type { CheckResult, CheckSpec, Task } from "./types";
+import type { CheckCategory, CheckKind, CheckResult, CheckSpec, Task } from "./types";
+
+export const SCORER_VERSION = "2026-11-14.2";
+
+/**
+ * Text is normalized the same way before every check, so a curly apostrophe or a
+ * non-breaking space cannot decide a result:
+ * Unicode compatibility form, straight quotes, plain hyphens, ordinary spaces.
+ * Accents are kept. "Hôpital" and "Hopital" are different strings unless the user approves both.
+ */
+export function normalizeText(text: string): string {
+  return text
+    .normalize("NFKC")
+    .replace(/[\u2018\u2019\u201a\u2032]/g, "'")
+    .replace(/[\u201c\u201d\u201e\u2033]/g, '"')
+    .replace(/[\u2010-\u2015\u2212]/g, "-")
+    .replace(/[\u00a0\u2000-\u200a\u202f]/g, " ")
+    .replace(/[\u200b-\u200d\ufeff]/g, "");
+}
+
+/** Loose form used only to detect a near miss: no accents, no punctuation, no case. Never used to pass a check. */
+export function foldLoose(text: string): string {
+  return normalizeText(text)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+export function categoryOf(kind: CheckKind, literal = false): CheckCategory {
+  if (kind === "maxWords") return "length";
+  if (kind === "noListFormatting" || kind === "numberedItemsExactly" || kind === "onlyNumberedLines") return "format";
+  return literal ? "exact_text" : "text_pattern";
+}
 
 // Deterministic checks only. No model is consulted here.
 
@@ -10,7 +43,7 @@ export function countWords(text: string): number {
   return text
     .trim()
     .split(/\s+/)
-    .filter((token) => /[A-Za-z0-9]/.test(token)).length;
+    .filter((token) => /[\p{L}\p{N}]/u.test(token)).length;
 }
 
 export function firstSentence(text: string): string {
@@ -28,8 +61,11 @@ function regex(spec: CheckSpec, extraFlags = ""): RegExp {
   return new RegExp(spec.pattern ?? "", Array.from(new Set(flags.split(""))).join(""));
 }
 
-export function runCheck(spec: CheckSpec, output: string): CheckResult {
-  const base = { id: spec.id, label: spec.label };
+export function runCheck(spec: CheckSpec, rawOutput: string): CheckResult {
+  const output = normalizeText(rawOutput);
+  const base = { id: spec.id, label: spec.label, category: categoryOf(spec.kind, !!spec.literals) };
+  // An empty answer meets nothing, including "must not mention" rules.
+  if (output.trim().length === 0) return { ...base, pass: false, detail: "the answer was empty" };
   switch (spec.kind) {
     case "maxWords": {
       const words = countWords(output);

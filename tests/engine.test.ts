@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { countWords, firstSentence, runCheck, scoreOutput } from "@/lib/checks";
 import { labelAblation, runTask, xrayTask } from "@/lib/engine";
 import { detectFriction } from "@/lib/friction";
@@ -87,8 +87,7 @@ describe("segmentation", () => {
     ).map((c) => c.text);
     expect(chunks).toEqual([
       "You are an expert analyst.",
-      "Summarize this feedback",
-      "for our CFO",
+      "Summarize this feedback for our CFO",
       "under 100 words,",
       "put the top complaint first,",
       "mention the $1,200 refund.",
@@ -166,7 +165,7 @@ describe("tasks discriminate between lazy and strong prompts (mock model)", () =
     }
   });
 
-  it("the public task never exposes the hidden checklist", () => {
+  it("the public task shows criteria in plain words but not the matching rules", () => {
     const pub = toPublicTask(email) as unknown as Record<string, unknown>;
     expect(pub.checks).toBeUndefined();
     expect(JSON.stringify(pub)).not.toContain("ghostClause");
@@ -184,7 +183,7 @@ describe("X-ray ablation (mock model)", () => {
     expect(persona.delta).toBe(0);
     expect(words.label).toBe("helpful");
     expect(words.flippedChecks).toContain("words");
-    expect(xray.modelCalls).toBe(1 + xray.ablations.length);
+    expect(xray.modelCalls).toBe(xray.runsPerChunk * (1 + xray.ablations.length));
   });
 
   it("skips ablation for a single-chunk prompt", async () => {
@@ -261,5 +260,264 @@ describe("own-prompt mode", () => {
     ]);
     expect(parseSuggestedChecks("no json here")).toEqual([]);
     expect(mockSuggest('Under 80 words and must say "Friday"').length).toBe(2);
+  });
+});
+
+import { apiKey, keyProblem, rawCall } from "@/lib/model";
+
+describe("API key handling", () => {
+  it("cleans quotes, spaces, and line breaks from the key", () => {
+    process.env.OPENAI_API_KEY = ' "sk-test123"\r\n';
+    expect(apiKey()).toBe("sk-test123");
+    delete process.env.OPENAI_API_KEY;
+    expect(apiKey()).toBe("");
+  });
+
+  it("explains a malformed key without calling the API or echoing it", async () => {
+    expect(keyProblem("sk-abc def")).toMatch(/space/);
+    expect(keyProblem("abc123")).toMatch(/sk-/);
+    expect(keyProblem("sk-abc123")).toBeNull();
+    const reply = await rawCall("hi", "sk-abc\ndef", "gpt-6-luna");
+    expect(reply.status).toBe(0);
+    expect(reply.note).toMatch(/API key/);
+    expect(reply.note).not.toMatch(/sk-abc/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression tests for the improvement pass. All run on the offline mock.
+// ---------------------------------------------------------------------------
+import { normalizeText } from "@/lib/checks";
+import { compareChecks, conclusion, diffWords, sameContext } from "@/lib/compare";
+import { alternativesFor, findContradiction } from "@/lib/custom";
+import { labelFromChanges } from "@/lib/engine";
+import { guardRevision, improveStep } from "@/lib/improve";
+import { buildModelInput } from "@/lib/model";
+
+const custom = (checks: unknown[], material = "") => {
+  const built = buildCustomTask({ material, checks });
+  if (!("task" in built)) throw new Error(built.error);
+  return built.task;
+};
+
+describe("comparison integrity", () => {
+  const calculus = custom([{ kind: "includes", text: "LHopital" }]);
+  const launch = custom(
+    [
+      { kind: "maxWords", value: 70 },
+      { kind: "includes", text: "March 3" },
+      { kind: "includes", text: "checkout bug" },
+      { kind: "excludes", text: "$40k" },
+      { kind: "singleParagraph" },
+    ],
+    "Launch moves to March 3 because of a checkout bug. Budget $40k.",
+  );
+
+  it("never compares a one-check calculus task with a five-check launch task", async () => {
+    const a = await runTask(calculus, "Give me a calculus study guide.");
+    const b = await runTask(launch, 'Write an update. Use 70 words or fewer. Include "March 3". Include "checkout bug". Write one plain paragraph with no bullet points.');
+    expect(a.total).toBe(1);
+    expect(b.total).toBe(5);
+    expect(sameContext(a, b)).toBe(false);
+    expect(conclusion(a, b)).toBeNull();
+  });
+
+  it("changing a requirement or the reference material creates a new context", async () => {
+    const base = await runTask(launch, "Write an update.");
+    const otherChecks = await runTask(custom([{ kind: "maxWords", value: 70 }], launch.sourceMaterial), "Write an update.");
+    const otherMaterial = await runTask(custom([{ kind: "maxWords", value: 70 }], "Different notes."), "Write an update.");
+    expect(new Set([base.contextId, otherChecks.contextId, otherMaterial.contextId]).size).toBe(3);
+    expect((await runTask(launch, "A different prompt entirely.")).contextId).toBe(base.contextId);
+  });
+
+  it("two revisions in one context give correct prompt, output, and check differences", async () => {
+    const before = await runTask(launch, "Write an update.");
+    const after = await runTask(launch, 'Write an update. Use 70 words or fewer. Include "March 3". Include "checkout bug".');
+    expect(sameContext(before, after)).toBe(true);
+    const diff = compareChecks(before.checks, after.checks);
+    expect(diff.improved.length).toBeGreaterThan(0);
+    expect(diff.improved.length + diff.regressed.length + diff.unchangedPass.length + diff.unchangedFail.length).toBe(5);
+    expect(conclusion(before, after)).toMatch(/more requirement/);
+    expect(after.output).not.toBe(before.output);
+    expect(diffWords(before.prompt, after.prompt).filter((t) => t.type === "added").length).toBeGreaterThan(3);
+  });
+
+  it("reports a trade and a regression instead of a net score", () => {
+    const check = (id: string, pass: boolean) => ({ id, label: id, pass, detail: "", category: "format" as const });
+    const diff = compareChecks([check("a", true), check("b", false)], [check("a", false), check("b", true)]);
+    expect(diff.improved.map((c) => c.id)).toEqual(["b"]);
+    expect(diff.regressed.map((c) => c.id)).toEqual(["a"]);
+  });
+});
+
+describe("evaluation integrity", () => {
+  it("normalizes Unicode punctuation but keeps accents distinct", () => {
+    expect(normalizeText("L’Hôpital rule — done")).toBe("L'Hôpital rule - done");
+    const strict = custom([{ kind: "includes", text: "L'Hôpital" }]).checks[0];
+    expect(runCheck(strict, "Use L’Hôpital’s rule.").pass).toBe(true);
+    expect(runCheck(strict, "Use LHopital.").pass).toBe(false);
+  });
+
+  it("accepts an alternative spelling only when the user approved it", () => {
+    expect(alternativesFor("L'Hôpital")).toEqual(expect.arrayContaining(["L'Hopital", "LHopital"]));
+    const approved = custom([{ kind: "includes", text: "L'Hôpital", alternatives: ["LHopital"] }]).checks[0];
+    expect(runCheck(approved, "Use LHopital.").pass).toBe(true);
+    expect(runCheck(approved, "Use LHopital.").category).toBe("exact_text");
+  });
+
+  it("flags a near miss as a possible checker mismatch, not a missing instruction", async () => {
+    const task = custom([{ kind: "includes", text: "LHopital" }]);
+    const fake = [{ id: "c1", label: task.checks[0].label, pass: false, detail: "not found", category: "exact_text" as const }];
+    const { diagnose } = await import("@/lib/diagnose");
+    const [d] = diagnose(task, "Explain limits.", "Apply L'Hôpital's rule to 0/0 forms.", fake, []);
+    expect(d.kind).toBe("possible_checker_mismatch");
+    expect(d.suggestedEdit).toBeNull();
+    expect(d.interpretation).toMatch(/cannot tell whether the idea is explained correctly/);
+  });
+
+  it("counts words, paragraphs, bullets, and numbered lists as documented", () => {
+    expect(countWords("One — two, three! 4 été")).toBe(5);
+    const para = custom([{ kind: "singleParagraph" }]).checks[0];
+    expect(runCheck(para, "One paragraph only.").pass).toBe(true);
+    expect(runCheck(para, "First.\n\nSecond.").pass).toBe(false);
+    expect(runCheck(para, "- bullet\n- bullet").pass).toBe(false);
+    expect(runCheck(para, "• bullet").pass).toBe(false);
+    const list = custom([{ kind: "numberedItems", value: 2 }]).checks[0];
+    expect(runCheck(list, "1. a\n2) b").pass).toBe(true);
+    expect(runCheck(list, "1. a\n2. b\n3. c").pass).toBe(false);
+  });
+
+  it("an empty answer meets nothing, including must-not-mention rules", () => {
+    const task = custom([{ kind: "excludes", text: "budget" }, { kind: "maxWords", value: 50 }]);
+    expect(scoreOutput(task, "   ").score).toBe(0);
+  });
+
+  it("rejects contradictory and impossible requirements", () => {
+    expect(findContradiction([{ kind: "includes", text: "March 3" }, { kind: "excludes", text: "march 3" }])).toMatch(/contradict/);
+    expect(findContradiction([{ kind: "maxWords", value: 2 }, { kind: "includes", text: "one two three four" }])).toMatch(/over the 2 word limit/);
+    expect(findContradiction([{ kind: "singleParagraph" }, { kind: "listOnly" }])).toMatch(/one format/);
+    expect(findContradiction([{ kind: "maxWords", value: 50 }, { kind: "includes", text: "Friday" }])).toBeNull();
+    expect("error" in buildCustomTask({ material: "", checks: [{ kind: "singleParagraph" }, { kind: "numberedItems", value: 3 }] })).toBe(true);
+  });
+
+  it("a run with no requirements is refused instead of scoring perfectly", async () => {
+    await expect(runTask({ ...cfo, checks: [] }, "Summarize.")).rejects.toThrow(/no requirements/);
+  });
+
+  it("the generation request never contains the scenario card or the rubric", () => {
+    for (const task of TASKS) {
+      const sent = buildModelInput(task, "Do the task.");
+      for (const fact of task.situationCard) expect(sent).not.toContain(fact);
+      for (const check of task.checks) {
+        expect(sent).not.toContain(check.label);
+        expect(sent).not.toContain(check.ghostClause);
+      }
+    }
+  });
+});
+
+describe("X-ray integrity", () => {
+  const change = (b: number, a: number) => ({ checkId: "x", label: "x", baselinePasses: b, ablatedPasses: a });
+  it("labels from per-check pass counts", () => {
+    expect(labelFromChanges([], 3, 3)).toBe("no_measured_effect");
+    expect(labelFromChanges([change(3, 0)], 3, 3)).toBe("helpful");
+    expect(labelFromChanges([change(0, 3)], 3, 3)).toBe("possibly_harmful");
+    expect(labelFromChanges([change(3, 1)], 3, 3)).toBe("uncertain");
+    expect(labelFromChanges([change(2, 0)], 3, 3)).toBe("uncertain");
+    expect(labelFromChanges([], 3, 0)).toBe("not_tested");
+  });
+
+  it("equal totals with different checks is a tradeoff, not no effect", () => {
+    expect(labelFromChanges([change(3, 0), { ...change(0, 3), checkId: "y" }], 3, 3)).toBe("tradeoff");
+  });
+
+  it("a zero-score baseline comes with a caution", async () => {
+    const task = custom([{ kind: "includes", text: "LHopital" }]);
+    const xray = await xrayTask(task, "I have a midterm for calculus in 5 days, and you please give me a study guide that I can use.", { runs: 3 });
+    expect(xray.baselineScore).toBe(0);
+    expect(xray.caution).toMatch(/says very little/);
+    expect(xray.ablations.every((a) => a.label === "no_measured_effect")).toBe(true);
+  });
+
+  it("a failed request is recorded as failed, never as a zero score", async () => {
+    const model = await import("@/lib/model");
+    const real = model.generate;
+    let n = 0;
+    const spy = vi.spyOn(model, "generate").mockImplementation(async (task, prompt) => {
+      n++;
+      if (n % 4 === 2) throw new Error("rate limited");
+      return real(task, prompt);
+    });
+    try {
+      const xray = await xrayTask(cfo, STRONG["cfo-summary"], { runs: 3, maxParallel: 1 });
+      expect(xray.failedCalls).toBeGreaterThan(0);
+      const short = xray.ablations.filter((a) => a.failedRuns > 0);
+      expect(short.length).toBeGreaterThan(0);
+      for (const a of xray.ablations) expect(a.scores.length).toBe(a.validRuns);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("overlapping instructions each show no change, which is why the note about overlaps exists", async () => {
+    const prompt = `${STRONG["cfo-summary"]} Keep it under 60 words please.`;
+    const xray = await xrayTask(cfo, prompt, { runs: 1 });
+    const limits = xray.ablations.filter((a) => /60 words/.test(a.text));
+    expect(limits.length).toBe(2);
+    expect(limits.every((a) => a.label === "no_measured_effect")).toBe(true);
+  });
+});
+
+describe("revision usefulness", () => {
+  it("gives different suggestions for omitted, ignored, and conflicting instructions", async () => {
+    const omitted = await runTask(cfo, "Summarize this feedback.");
+    const missing = omitted.diagnoses.find((d) => d.checkId === "friday")!;
+    expect(missing.kind).toBe("missing_instruction");
+    expect(missing.suggestedEdit).toBe("Say that a decision is needed by Friday.");
+
+    const { diagnose } = await import("@/lib/diagnose");
+    const failed = cfo.checks.map((c) => ({ id: c.id, label: c.label, pass: c.id !== "words", detail: "84 words", category: "length" as const }));
+    const [ignored] = diagnose(cfo, "Summarize this feedback in under 60 words.", "long answer", failed, []);
+    expect(ignored.kind).toBe("present_not_followed");
+    expect(ignored.suggestedEdit).toMatch(/^This is a strict requirement/);
+    expect(ignored.suggestedEdit).not.toBe(missing.suggestedEdit);
+
+    const conflictPrompt = "Give a brief but detailed and comprehensive summary.";
+    const [clash] = diagnose(cfo, conflictPrompt, "long answer", failed, detectFriction(conflictPrompt, segmentPrompt(conflictPrompt)));
+    expect(clash.kind).toBe("conflict");
+    expect(clash.suggestedEdit).toBeNull();
+  });
+
+  it("a persona alone is not reported as a conflict or a failure cause", async () => {
+    const run = await runTask(cfo, "You are an expert analyst. Summarize this feedback.");
+    expect(run.diagnoses.every((d) => d.kind !== "conflict")).toBe(true);
+  });
+});
+
+describe("improve and test", () => {
+  it("blocks drift, invented facts, and no-op edits", () => {
+    const original = "Summarize this feedback for our CFO under 60 words.";
+    expect(guardRevision(cfo, original, original)).toMatch(/identical/);
+    expect(guardRevision(cfo, original, "Write a poem about spring.")).toMatch(/dropped too much/);
+    expect(guardRevision(cfo, original, `${original} Mention the $9,999 penalty.`)).toMatch(/9,999/);
+    expect(guardRevision(cfo, original, `${original} Say that a decision is needed by Friday.`)).toBeNull();
+  });
+
+  it("proposes one edit, tests it fresh in the same context, and does not repeat a rejected edit", async () => {
+    const start = await runTask(cfo, "Summarize this feedback for our CFO.");
+    const failedIds = start.checks.filter((c) => !c.pass).map((c) => c.id);
+    const step = await improveStep(cfo, start.prompt, start.output, failedIds, []);
+    expect(step.blocked).toBeNull();
+    expect(step.run!.contextId).toBe(start.contextId);
+    expect(step.run!.prompt).not.toBe(start.prompt);
+    expect(compareChecks(start.checks, step.run!.checks).improved.length).toBeGreaterThan(0);
+    const again = await improveStep(cfo, start.prompt, start.output, failedIds, [step.candidate!.change]);
+    expect(again.candidate!.change).not.toBe(step.candidate!.change);
+  });
+
+  it("stops when nothing is failing", async () => {
+    const step = await improveStep(cfo, STRONG["cfo-summary"], "fine", [], []);
+    expect(step.run).toBeNull();
+    expect(step.blocked).toMatch(/already met/);
   });
 });

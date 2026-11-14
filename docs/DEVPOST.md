@@ -12,30 +12,28 @@ We all write prompts every day, and none of us could say which words in them act
 
 ## What it does
 
-You write a prompt, and PromptProof:
+PromptProof runs your prompt, checks the answer against requirements you chose, shows what to change, and retests the revision under the same checks.
 
-1. Runs it and shows the AI answer.
-2. Scores the answer against fixed, rule-based requirements. No AI judges the score.
-3. X-rays your prompt: it removes one part at a time, reruns the task, and shows which parts helped, which had no measured effect, and which may have hurt. Each label is confirmed across three runs.
-4. Shows the details you left out as ghost text you can click to add.
-5. Shows before and after side by side when you rerun.
-
-There are two modes. Practice scenarios give you a realistic task with facts only you can see. Your own prompt lets you paste a prompt you actually use and state what a good answer must do, as rules you choose. The model can suggest those rules from a one-line description, and you approve them.
-
-It also flags risky wording patterns such as personas, leading assumptions, and conflicting instructions. These are labeled as warnings, separate from measured effects.
+1. You give it a prompt, optional reference material, and what a successful answer must do. You can describe success in plain words and review suggested checks, or add them by hand.
+2. It shows the answer beside each requirement, met or missed, with the evidence.
+3. For each miss it gives a diagnosis (missing instruction, instruction present but not followed, conflicting instructions, or possible checker mismatch) and one specific edit to try.
+4. You test the revision. The comparison shows both prompts, both answers, and which requirements improved, stayed the same, or regressed. Runs are compared only inside the same evaluation context.
+5. Optionally, the X-ray removes one instruction at a time and reruns, to show which instructions the result depends on.
+6. Optionally, a bounded helper tries up to three single edits, keeps one only if something improves and nothing regresses, and shows every attempt.
 
 ## How we built it
 
 - Next.js, React, and TypeScript, deployed on Vercel.
 - OpenAI API, called only from the server.
-- A rule-based engine: prompt segmentation, leave-one-out ablation with parallel model calls, deterministic scoring, and pattern warnings.
+- A rule-based engine: prompt segmentation, leave-one-out ablation with parallel model calls, rule-based checks, an evaluation-context fingerprint, and failure diagnosis.
 - No database. Prompts are not stored.
-- 31 unit tests, plus an offline mock model so the whole pipeline can be tested without a key.
+- 55 tests on an offline mock model, including regression tests for invalid comparisons, Unicode matching, failed requests, and helper guardrails.
 - A canvas-drawn spectral wave background and scroll-driven walkthrough, built without an animation library, with reduced-motion and mobile versions.
 
 ## Challenges we ran into
 
-- Making scores trustworthy. We chose fixed rules over an AI judge so a score is a fact, not an opinion.
+- Making comparisons valid. An early version compared runs with different requirements and reported a meaningless improvement. Every result now carries a fingerprint of its evaluation context.
+- Being honest about what a rule proves. A fixed rule is repeatable, not complete. An exact-text check shows a phrase appears, not that it is explained correctly.
 - Stopping a capable model from guessing the requirements. Each task depends on facts the model never sees.
 - Speed. An X-ray needs one model call per part of the prompt, so we run them in parallel. [Add measured time from the report.]
 - Honesty about randomness. AI answers vary, so the app says "no measurable decline on this task" and never "this phrase is useless."

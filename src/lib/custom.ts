@@ -1,3 +1,4 @@
+import { countWords, foldLoose, normalizeText } from "./checks";
 import { getTask } from "./tasks";
 import { CUSTOM_TASK_ID } from "./types";
 import type { CheckSpec, CustomCheck, CustomCheckKind, CustomTaskInput, Task } from "./types";
@@ -22,7 +23,7 @@ const NEEDS_TEXT: CustomCheckKind[] = ["includes", "excludes", "startsWith"];
 const NEEDS_VALUE: CustomCheckKind[] = ["maxWords", "numberedItems"];
 
 function escapeRegex(text: string): string {
-  return text
+  return normalizeText(text)
     .trim()
     .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
     .replace(/\s+/g, "\\s+");
@@ -38,7 +39,16 @@ export function cleanCheck(raw: unknown): CustomCheck | null {
     if (typeof text !== "string") return null;
     const t = text.trim().replace(/\s+/g, " ");
     if (t.length === 0 || t.length > MAX_CHECK_TEXT) return null;
-    return { kind: k, text: t };
+    const { alternatives } = raw as { alternatives?: unknown };
+    const alts =
+      k === "includes" && Array.isArray(alternatives)
+        ? alternatives
+            .filter((a): a is string => typeof a === "string")
+            .map((a) => a.trim().replace(/\s+/g, " "))
+            .filter((a) => a.length > 0 && a.length <= MAX_CHECK_TEXT && a !== t)
+            .slice(0, 4)
+        : [];
+    return alts.length > 0 ? { kind: k, text: t, alternatives: alts } : { kind: k, text: t };
   }
   if (NEEDS_VALUE.includes(k)) {
     const n = Math.floor(Number(value));
@@ -55,7 +65,7 @@ export function describeCheck(check: CustomCheck): string {
     case "maxWords":
       return `${check.value} words or fewer`;
     case "includes":
-      return `Includes "${check.text}"`;
+      return `Contains the exact text "${check.text}"${(check.alternatives ?? []).map((a) => ` or "${a}"`).join("")}`;
     case "excludes":
       return `Does not mention "${check.text}"`;
     case "startsWith":
@@ -85,14 +95,25 @@ function toSpec(check: CustomCheck, index: number): CheckSpec {
         ghostClause: `Use ${n} words or fewer.`,
         promptCue: `\\b${n}\\s*-?\\s*words?\\b|\\bwords?\\b[^.]*\\b${n}\\b`,
       };
-    case "includes":
-      return { id, label, kind: "matches", pattern: esc, ghostClause: `Include "${text}".`, promptCue: esc };
+    case "includes": {
+      const all = [text, ...(check.alternatives ?? [])];
+      return {
+        id,
+        label,
+        kind: "matches",
+        pattern: all.map(escapeRegex).join("|"),
+        ghostClause: `Include "${text}".`,
+        promptCue: all.map(escapeRegex).join("|"),
+        literals: all,
+      };
+    }
     case "excludes":
       return {
         id,
         label,
         kind: "notMatches",
         pattern: esc,
+        literals: [text],
         ghostClause: `Do not mention "${text}".`,
         promptCue: `(no|not|without|avoid|leave out|exclude|never|omit)[^.]*${esc}`,
       };
@@ -102,6 +123,7 @@ function toSpec(check: CustomCheck, index: number): CheckSpec {
         label,
         kind: "startsWith",
         pattern: `^\\W*${esc}`,
+        literals: [text],
         ghostClause: `Start with "${text}".`,
         promptCue: `(start|begin|open)[^.]*${esc}`,
       };
@@ -133,6 +155,47 @@ function toSpec(check: CustomCheck, index: number): CheckSpec {
   }
 }
 
+/**
+ * Spellings a user might also want to accept: without accents, without apostrophes.
+ * These are offered for approval. They are never applied on their own.
+ */
+export function alternativesFor(text: string): string[] {
+  const base = normalizeText(text).trim();
+  const noAccents = base.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const candidates = [noAccents, base.replace(/'/g, ""), noAccents.replace(/'/g, "")];
+  return Array.from(new Set(candidates)).filter((c) => c.length > 0 && c !== base && c !== text.trim());
+}
+
+/** Requirements that cannot all be met by one answer. Returns a plain-language reason, or null. */
+export function findContradiction(checks: CustomCheck[]): string | null {
+  const has = (kind: CustomCheckKind) => checks.filter((c) => c.kind === kind);
+  const required = [...has("includes"), ...has("startsWith")];
+  for (const banned of has("excludes")) {
+    const b = foldLoose(banned.text ?? "");
+    const clash = required.find((r) => [r.text ?? "", ...(r.alternatives ?? [])].some((t) => b.length > 0 && foldLoose(t).includes(b)));
+    if (clash) return `Two requirements contradict each other: the answer must contain "${clash.text}" and must not mention "${banned.text}".`;
+  }
+  const limits = has("maxWords").map((c) => c.value ?? 0);
+  if (new Set(limits).size > 1) return "There are two different word limits. Keep one.";
+  if (limits.length > 0) {
+    const needed = required.reduce((sum, r) => sum + countWords(r.text ?? ""), 0);
+    if (needed > limits[0]) return `The required text alone is ${needed} words, which is over the ${limits[0]} word limit.`;
+  }
+  const lists = [...has("numberedItems"), ...has("listOnly")];
+  if (has("singleParagraph").length > 0 && lists.length > 0) {
+    return "The answer cannot be one plain paragraph and a numbered list at the same time. Keep one format.";
+  }
+  if (new Set(has("numberedItems").map((c) => c.value)).size > 1) return "There are two different list lengths. Keep one.";
+  if (has("startsWith").length > 1) return "The answer can only start one way. Keep one \"must start with\" requirement.";
+  const seen = new Set<string>();
+  for (const c of checks) {
+    const key = `${c.kind}|${foldLoose(c.text ?? "")}|${c.value ?? ""}`;
+    if (seen.has(key)) return "Two requirements are the same. Remove the duplicate.";
+    seen.add(key);
+  }
+  return null;
+}
+
 export function buildCustomTask(input: unknown): { task: Task } | { error: string } {
   if (!input || typeof input !== "object") return { error: "Add at least one requirement for your own prompt." };
   const { material, checks } = input as Partial<CustomTaskInput>;
@@ -144,6 +207,8 @@ export function buildCustomTask(input: unknown): { task: Task } | { error: strin
   if (checks.length > MAX_CUSTOM_CHECKS) return { error: `Use at most ${MAX_CUSTOM_CHECKS} requirements.` };
   const cleaned = checks.map(cleanCheck);
   if (cleaned.some((c) => c === null)) return { error: "One of the requirements is incomplete. Fill it in or remove it." };
+  const conflict = findContradiction(cleaned as CustomCheck[]);
+  if (conflict) return { error: conflict };
   return {
     task: {
       id: CUSTOM_TASK_ID,

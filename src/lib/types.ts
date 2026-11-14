@@ -25,7 +25,12 @@ export interface CheckSpec {
   ghostClause: string;
   /** Regex source that detects whether a prompt already communicates this requirement. */
   promptCue: string;
+  /** For exact-text checks from a user: the literal strings being searched for. */
+  literals?: string[];
 }
+
+/** What kind of evidence a check gives. Shown beside every result so nobody mistakes one for another. */
+export type CheckCategory = "exact_text" | "text_pattern" | "length" | "format";
 
 export interface Task {
   id: string;
@@ -39,7 +44,7 @@ export interface Task {
   checks: CheckSpec[];
 }
 
-/** What the browser is allowed to see before a run: no hidden checklist. */
+/** What the browser shows before a run. The generation model never receives the scenario card or the criteria. */
 export interface PublicTask {
   id: string;
   title: string;
@@ -47,19 +52,25 @@ export interface PublicTask {
   situationCard: string[];
   sourceMaterial: string;
   checkCount: number;
+  /** The requirements, in plain words. Shown to the learner up front. There are no hidden gotchas. */
+  criteria: string[];
 }
 
 export interface CheckResult {
   id: string;
   label: string;
   pass: boolean;
-  /** Short factual detail, for example "84 words". */
+  /** Short factual detail, for example "84 words". This is the evidence behind the result. */
   detail: string;
+  category: CheckCategory;
 }
 
 export interface PromptChunk {
   index: number;
   text: string;
+  /** Character offsets of this instruction in the original prompt. */
+  start: number;
+  end: number;
 }
 
 export type FrictionCategory =
@@ -101,6 +112,8 @@ export interface CustomCheck {
   kind: CustomCheckKind;
   text?: string;
   value?: number;
+  /** Other spellings the user has approved for an "includes" check. Never added silently. */
+  alternatives?: string[];
 }
 
 /** A task the user defines for their own prompt. Sent with taskId "custom". */
@@ -119,7 +132,44 @@ export interface RunRequest {
   custom?: CustomTaskInput;
 }
 
+/** Everything that defines an evaluation. Two runs are comparable only when their context ids match. */
+export interface ContextSnapshot {
+  /** Fingerprint of the task, reference material, criteria, scorer version, and model settings. */
+  id: string;
+  taskId: string;
+  title: string;
+  material: string;
+  criteria: { id: string; label: string; category: CheckCategory }[];
+  scorerVersion: string;
+  model: string;
+  settings: string;
+}
+
+export type DiagnosisKind =
+  | "missing_instruction"
+  | "present_not_followed"
+  | "conflict"
+  | "possible_checker_mismatch"
+  | "insufficient_evidence";
+
+/** Why a check may have failed, with the evidence, and one edit to try. A suggestion is never a tested fix. */
+export interface Diagnosis {
+  checkId: string;
+  checkLabel: string;
+  kind: DiagnosisKind;
+  observation: string;
+  evidence: string;
+  interpretation: string;
+  /** Text to add to the prompt, or null when a prompt edit is not the right next step. */
+  suggestedEdit: string | null;
+  /** For a possible checker mismatch: spellings the user may approve. */
+  alternatives?: string[];
+}
+
 export interface RunResult {
+  contextId: string;
+  context: ContextSnapshot;
+  diagnoses: Diagnosis[];
   taskId: string;
   prompt: string;
   output: string;
@@ -135,7 +185,22 @@ export interface RunResult {
   ms: number;
 }
 
-export type AblationLabel = "helpful" | "no_measured_effect" | "possibly_harmful" | "uncertain";
+export type AblationLabel =
+  | "helpful" // removing it lowered the pass rate of at least one check, consistently
+  | "no_measured_effect" // no change detected in the selected checks
+  | "possibly_harmful" // removing it raised the pass rate, consistently
+  | "tradeoff" // removing it helped one check and hurt another
+  | "uncertain" // mixed results across runs
+  | "not_tested"; // every run for this part failed, so there is nothing to report
+
+export interface CheckChange {
+  checkId: string;
+  label: string;
+  /** Runs (out of `runs`) in which the check passed with the full prompt. */
+  baselinePasses: number;
+  /** Runs (out of `validRuns` for the part) in which it passed with the instruction removed. */
+  ablatedPasses: number;
+}
 
 export interface AblationResult {
   chunkIndex: number;
@@ -147,6 +212,11 @@ export interface AblationResult {
   label: AblationLabel;
   /** Check ids whose result changed when the chunk was removed (first run). */
   flippedChecks: string[];
+  /** Per-check pass counts, only for checks whose count changed. */
+  changes: CheckChange[];
+  /** Runs that returned an answer. A failed request is not a zero score. */
+  validRuns: number;
+  failedRuns: number;
 }
 
 export interface XrayRequest {
@@ -176,6 +246,14 @@ export interface XrayResult {
   total: number;
   runsPerChunk: number;
   ablations: AblationResult[];
+  contextId: string;
+  /** Baseline runs that returned an answer. */
+  baselineValidRuns: number;
+  failedCalls: number;
+  /** Pass counts per check with the full prompt, across the baseline runs. */
+  baselineChecks: { id: string; label: string; passes: number }[];
+  /** Plain-language caution when the evidence is thin, for example a zero-score baseline. */
+  caution: string | null;
   modelCalls: number;
   ms: number;
   model: string;
@@ -184,4 +262,25 @@ export interface XrayResult {
 
 export interface ApiError {
   error: string;
+}
+
+export interface ImproveRequest {
+  taskId: string;
+  prompt: string;
+  custom?: CustomTaskInput;
+  /** The answer and failed checks from the run being improved. */
+  output: string;
+  failedCheckIds: string[];
+  /** Edits already tried and rejected in this session, so they are not proposed again. */
+  rejected: string[];
+}
+
+export interface ImproveStep {
+  /** The proposed revision. Null when no usable edit could be proposed. */
+  candidate: { prompt: string; change: string; reason: string } | null;
+  /** A fresh run of the candidate under the same criteria. Null when the candidate was blocked or the run failed. */
+  run: RunResult | null;
+  /** Why the candidate was blocked before testing, if it was. */
+  blocked: string | null;
+  modelCalls: number;
 }

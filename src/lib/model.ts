@@ -30,13 +30,36 @@ export interface RawReply {
 }
 
 export function configuredModel(): string {
-  return process.env.OPENAI_MODEL || DEFAULT_MODEL;
+  return (process.env.OPENAI_MODEL || "").trim() || DEFAULT_MODEL;
+}
+
+/**
+ * The key as usable in a header: surrounding spaces, line breaks, and quotes removed.
+ * Pasting a key into a hosting dashboard often adds one of these, and a header with a
+ * line break in it cannot be sent at all.
+ */
+export function apiKey(): string {
+  return (process.env.OPENAI_API_KEY ?? "").trim().replace(/^["']+|["']+$/g, "").trim();
+}
+
+/** A problem with the key that we can see without calling the API, or null. Never includes the key. */
+export function keyProblem(key: string): string | null {
+  if (!key) return null;
+  if (/[^\x21-\x7e]/.test(key)) return "the API key contains a space, line break, or hidden character. Paste it again";
+  if (!key.startsWith("sk-")) return 'the API key does not start with "sk-". Check that the right value was pasted';
+  return null;
 }
 
 export function modelInfo(): { model: string; mock: boolean } {
-  return process.env.OPENAI_API_KEY
+  return apiKey()
     ? { model: configuredModel(), mock: false }
     : { model: "offline mock model", mock: true };
+}
+
+/** The generation settings, recorded with every result so runs under different settings are never compared. */
+export function modelSettings(): string {
+  if (!apiKey()) return "offline mock";
+  return `reasoning_effort=${process.env.OPENAI_REASONING_EFFORT || "none"}, temperature=0, max_output_tokens=${MAX_OUTPUT_TOKENS}`;
 }
 
 /** What the model actually receives: the user's prompt, then the task material. Never the situation card. */
@@ -73,6 +96,8 @@ function safeNote(status: number, code: string, message: string): string {
 /** One request, no retry on failure. Exposed so the benchmark can see statuses and timings. */
 export async function rawCall(input: string, key: string, model: string): Promise<RawReply> {
   const started = Date.now();
+  const problem = keyProblem(key);
+  if (problem) return { status: 0, text: "", ms: 0, note: problem };
   for (let attempt = 0; attempt < 3; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -109,7 +134,11 @@ export async function rawCall(input: string, key: string, model: string): Promis
       return { status: res.status, text: "", ms: Date.now() - started, note: safeNote(res.status, data.error?.code ?? "", message) };
     } catch (err) {
       const timedOut = err instanceof Error && err.name === "AbortError";
-      return { status: 0, text: "", ms: Date.now() - started, note: timedOut ? "the model timed out" : "network error" };
+      // Name the low-level reason (for example ENOTFOUND or ECONNRESET) so the failure can be diagnosed.
+      const cause = err instanceof Error ? (err.cause as { code?: string; message?: string } | undefined) : undefined;
+      const detail = (cause?.code || cause?.message || (err instanceof Error ? err.message : "") || "").replace(/sk-[A-Za-z0-9_\-*]+/g, "[key]").slice(0, 80);
+      const note = timedOut ? "the model timed out" : `could not reach OpenAI${detail ? `: ${detail}` : ""}`;
+      return { status: 0, text: "", ms: Date.now() - started, note };
     } finally {
       clearTimeout(timer);
     }
@@ -129,14 +158,14 @@ async function callOpenAI(input: string, key: string, model: string): Promise<st
     if (last.status === 200 && last.text) return last.text;
     // Retry once on rate limits, server errors, timeouts, and empty answers only.
     const retryable = last.status === 429 || last.status >= 500 || last.status === 0 || last.status === 200;
-    if (!retryable || last.note.includes("no credit")) break;
+    if (!retryable || last.note.includes("no credit") || last.note.includes("API key")) break;
     await new Promise((resolve) => setTimeout(resolve, 600));
   }
   throw new Error(last?.note || "unknown error");
 }
 
 export async function generate(task: Task, prompt: string): Promise<ModelReply> {
-  const key = process.env.OPENAI_API_KEY;
+  const key = apiKey();
   if (!key) {
     // Optional pause so loading states can be seen and rehearsed without a key.
     const pause = Number(process.env.MOCK_DELAY_MS);
@@ -150,7 +179,7 @@ export async function generate(task: Task, prompt: string): Promise<ModelReply> 
 
 /** Free-form call with no task attached. Returns null in mock mode so the caller can use a labeled stand-in. */
 export async function generateText(input: string): Promise<ModelReply | null> {
-  const key = process.env.OPENAI_API_KEY;
+  const key = apiKey();
   if (!key) return null;
   const model = configuredModel();
   return { text: await callOpenAI(input, key, model), model, mock: false };

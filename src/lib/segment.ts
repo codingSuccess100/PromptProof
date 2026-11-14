@@ -1,6 +1,7 @@
 import type { PromptChunk } from "./types";
 
-// Splits a prompt into roughly 4 to 8 meaningful instruction chunks.
+// Splits a prompt into sentences and clause-level instructions (at most 8).
+// This is phrase-level testing. It does not attribute an effect to individual words.
 // Rule-based on purpose: it is fast, free, and gives the same chunks every time,
 // so an ablation result always refers to the same piece of text.
 
@@ -14,15 +15,11 @@ const PRIMARY_SPLIT = /(?<=[.!?;:])\s+|(?<=,)\s+|\s*\n+\s*/;
 const SECONDARY_SPLIT = new RegExp(
   "\\s+(?=(?:" +
     [
-      "for (?:our|the|my|a|an)\\b",
-      "to (?:our|the|my) \\w+",
       "under \\d",
       "in (?:under|fewer|less|no more)\\b",
       "no more than\\b",
-      "using\\b",
-      "with (?:a|an|no|the)\\b",
+      "with no\\b",
       "without\\b",
-      "as (?:a|an|one)\\b",
       "(?:and|then) (?:put|mention|include|keep|make|end|start|use|write|add|lead|flag|list|give|say|mark|ask|open|begin|output|leave|only)\\b",
       "but\\b",
     ].join("|") +
@@ -99,7 +96,18 @@ export function segmentPrompt(prompt: string): PromptChunk[] {
     parts.splice(best, 2, `${parts[best]} ${parts[best + 1]}`);
   }
 
-  return parts.map((text, index) => ({ index, text }));
+  // Record where each instruction sits in the original prompt.
+  let cursor = 0;
+  return parts.map((text, index) => {
+    const firstWord = text.split(/\s+/)[0];
+    const found = prompt.indexOf(firstWord, cursor);
+    const start = found === -1 ? cursor : found;
+    const lastWord = text.split(/\s+/).pop() ?? "";
+    const tail = prompt.indexOf(lastWord, Math.max(start, start + text.length - lastWord.length - 4));
+    const end = tail === -1 ? Math.min(prompt.length, start + text.length) : tail + lastWord.length;
+    cursor = end;
+    return { index, text, start, end };
+  });
 }
 
 /** The prompt with one chunk removed. */

@@ -38,7 +38,7 @@ if (existsSync(".env.local")) {
   }
 }
 
-const key = (process.env.OPENAI_API_KEY ?? "").trim();
+const key = (process.env.OPENAI_API_KEY ?? "").trim().replace(/^["']+|["']+$/g, "").trim();
 const mock = process.argv.includes("--mock");
 if (mock) {
   delete process.env.OPENAI_API_KEY;

@@ -98,7 +98,7 @@ const FILLER =
 /** Literal-minded mock for a user's own task: it does what the prompt asks and nothing more. */
 function customTask(task: Task, prompt: string): string {
   const said = (spec: Task["checks"][number]) => promptMentions(spec.promptCue, prompt);
-  const quoted = (spec: Task["checks"][number]) => spec.label.match(/"(.*)"/)?.[1] ?? "";
+  const quoted = (spec: Task["checks"][number]) => spec.literals?.[0] ?? spec.label.match(/"([^"]*)"/)?.[1] ?? "";
   let opening = "";
   const sentences: string[] = ["Here is a response to your request."];
   let limit = 0;
