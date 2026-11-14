@@ -6,7 +6,8 @@ import { APP_NAME, REPO_URL } from "@/lib/brand";
 
 export const MOTION_KEY = "promptproof:motion";
 
-export function Nav() {
+/** `motion` shows the pause control. Only pages with a moving background pass it. */
+export function Nav({ motion = false }: { motion?: boolean }) {
   const [scrolled, setScrolled] = useState(false);
   const [paused, setPaused] = useState(false);
   useEffect(() => {
@@ -42,26 +43,34 @@ export function Nav() {
         <a href={REPO_URL} target="_blank" rel="noreferrer" className="nav-extra">
           GitHub
         </a>
-        <button className="nav-motion" onClick={toggle} aria-pressed={paused}>
-          {paused ? "Play background" : "Pause background"}
-        </button>
+        {motion && (
+          <button className="nav-motion" onClick={toggle} aria-pressed={paused}>
+            {paused ? "Play background" : "Pause background"}
+          </button>
+        )}
       </nav>
     </header>
   );
 }
 
-// Recorded on gpt-6-luna, November 14, 2026, with the benchmark in this repository.
-// Three runs each: the first prompt met 2, 2, and 0 of 5 requirements, the revision met 5, 5, and 5.
+// Recorded on gpt-6-luna, November 14, 2026, with the benchmark script in this repository.
+// These are the actual prompts and the actual first answers from those runs.
+// Three runs each: the first prompt passed 2, 2, and 0 of 5 checks, the revision passed 5, 5, and 5.
 const EXAMPLE = {
+  goal: "A short summary of customer feedback for the CFO, who is about to meet the billing vendor.",
   before: "Summarize this feedback.",
+  beforeAnswer:
+    "Customers most often complained about late deliveries: four of eight comments mentioned delays, including one repeat issue and one missed gift occasion. Two reported billing or invoice errors that required follow-up to resolve. Support feedback was mixed but positive overall: two customers praised friendly, responsive service, while one had to contact support to fix a duplicate charge.",
   after:
     "Summarize this customer feedback for our CFO in one plain paragraph with no bullet points. Keep it under 60 words. Start with the billing errors, not the delivery complaints. Mention that refunds for billing errors cost $1,200 last month. Say that a decision is needed by Friday.",
+  afterAnswer:
+    "Billing errors, including duplicate charges and incorrect invoices, required refunds costing $1,200 last month. Delivery complaints also point to repeated delays, including missed promised dates and poor communication. Support feedback was positive. A decision is needed by Friday.",
   checks: [
-    { label: "60 words or fewer", before: true, after: true },
     { label: "Opens with the billing errors", before: false, after: true },
     { label: "Includes the $1,200 refund cost", before: false, after: true },
-    { label: "One plain paragraph, no bullets", before: true, after: true },
     { label: "Mentions the Friday decision deadline", before: false, after: true },
+    { label: "60 words or fewer", before: true, after: true },
+    { label: "One plain paragraph, no bullets", before: true, after: true },
   ],
 };
 
@@ -70,61 +79,55 @@ export function Landing() {
     <>
       <section className="hero">
         <div className="hero-copy">
-          <h1>See why your prompt missed.</h1>
+          <h1>Turn a rough prompt into a tested one.</h1>
           <p className="hero-sub">
-            {APP_NAME} runs your prompt, checks the answer against what you said you needed, shows what to change, and
-            retests the revision under the same checks.
+            Tell {APP_NAME} what you want from the answer. It runs your prompt, points to what missed, proposes a
+            specific change, and tests that change against your goal and the checks you chose.
           </p>
           <div className="hero-actions">
             <Link className="btn primary" href="/workspace">
               Open the workspace
             </Link>
           </div>
-          <p className="fine">Free to try. Starts with a worked example, or bring your own prompt.</p>
+          <p className="fine">It proposes and tests changes. It does not promise the answer is correct.</p>
         </div>
 
         <figure className="preview solid" aria-label="Recorded example of a prompt revision">
           <figcaption>
             <span className="badge recorded">Recorded example</span>
-            <span className="fine">gpt-6-luna, November 14, 2026. Not a live run.</span>
+            <span className="fine">Real runs on gpt-6-luna, November 14, 2026. Not live.</span>
           </figcaption>
+          <p className="preview-goal">
+            <span className="label">The goal</span>
+            {EXAMPLE.goal}
+          </p>
           <div className="preview-grid">
             <div>
-              <p className="label">Original prompt</p>
+              <p className="label">Rough prompt</p>
               <p className="preview-prompt">{EXAMPLE.before}</p>
-              <p className="preview-score">
-                2 <span>of 5 requirements met</span>
-              </p>
+              <p className="label">Answer</p>
+              <p className="preview-answer">{EXAMPLE.beforeAnswer}</p>
+              <p className="preview-score">2 of 5 checks passed</p>
             </div>
             <div>
               <p className="label">Revised prompt</p>
               <p className="preview-prompt">{EXAMPLE.after}</p>
-              <p className="preview-score good">
-                5 <span>of 5 requirements met</span>
-              </p>
+              <p className="label">Answer</p>
+              <p className="preview-answer">{EXAMPLE.afterAnswer}</p>
+              <p className="preview-score good">5 of 5 checks passed</p>
             </div>
           </div>
-          <table className="check-table">
-            <thead>
-              <tr>
-                <th scope="col">Same requirements, both runs</th>
-                <th scope="col">Original</th>
-                <th scope="col">Revised</th>
-              </tr>
-            </thead>
-            <tbody>
-              {EXAMPLE.checks.map((c) => (
-                <tr key={c.label}>
-                  <th scope="row">{c.label}</th>
-                  <td className={c.before ? "pass" : "fail"}>{c.before ? "✓ met" : "× missed"}</td>
-                  <td className={c.after ? "pass" : "fail"}>{c.after ? "✓ met" : "× missed"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ul className="preview-checks">
+            {EXAMPLE.checks.map((c) => (
+              <li key={c.label} className={c.before ? "same" : "gained"}>
+                <span aria-hidden="true">{c.before ? "=" : "\u2191"}</span> {c.label}
+                <span className="fine">{c.before ? " passed both times" : " missed, then passed"}</span>
+              </li>
+            ))}
+          </ul>
           <p className="fine">
-            Shown: the first of three runs each. Across three runs the original met 2, 2, and 0, and the revision met
-            5, 5, and 5.
+            Shown: the first of three runs each. Across three runs the rough prompt passed 2, 2, and 0 checks, and the
+            revision passed 5, 5, and 5.
           </p>
         </figure>
       </section>
@@ -132,21 +135,20 @@ export function Landing() {
       <section className="steps">
         <ol>
           <li>
-            <h2>Say what a good answer must do</h2>
-            <p>A word limit, a fact that must appear, a format. You choose the checks, so you know what the result means.</p>
+            <h2>Say what you want</h2>
+            <p>Write your prompt and describe the result you are after, in ordinary words. No rubric to build first.</p>
           </li>
           <li>
-            <h2>Run it and see what missed</h2>
-            <p>Each missed requirement comes with the evidence and one specific edit to try. Not &quot;be more specific&quot;.</p>
+            <h2>See what missed, and why</h2>
+            <p>Rule-based checks show what can be verified mechanically. A separate goal review flags things like an answer written for the wrong reader.</p>
           </li>
           <li>
-            <h2>Test the revision, same checks</h2>
-            <p>Original and revised, side by side: both prompts, both answers, and which requirements changed.</p>
+            <h2>Revise and compare</h2>
+            <p>Each finding comes with a specific edit. Test it and see both prompts, both answers, and what changed.</p>
           </li>
         </ol>
         <p className="fine">
-          Want to know which instructions in a prompt are doing the work? The workspace can also remove them one at a
-          time and rerun. <Link href="/method">How the method works, and its limits.</Link>
+          <Link href="/method">How it works, what is measured, and what is only suggested.</Link>
         </p>
       </section>
     </>
@@ -174,6 +176,20 @@ export function Method() {
           <b>The X-ray.</b> Each instruction in your prompt is removed in turn and the task is rerun three times. The
           unchanged prompt is also rerun three times. Results are reported per requirement, as pass counts.
         </li>
+      </ul>
+
+      <h2>Goal review</h2>
+      <p>
+        Rule-based checks cannot tell whether an answer serves your goal. A summary written for the wrong reader can
+        pass every one of them. So a second, separate layer asks the model to compare your goal, your prompt, and the
+        answer, and to report up to three concerns, such as a different deliverable, a changed recipient, or checks
+        that do not cover what you asked for.
+      </p>
+      <ul>
+        <li>It is model-assisted and can be wrong. It is a suggested interpretation, not a measurement.</li>
+        <li>It never changes a rule-based result, and a perfect rule-based result never hides it.</li>
+        <li>Every quote it shows is verified to appear in your prompt or the answer. Unverified quotes are dropped.</li>
+        <li>The same reviewer repeating itself is not proof. Read the answer.</li>
       </ul>
 
       <h2>What is not measured</h2>
@@ -215,11 +231,12 @@ export function Method() {
 
       <h2>Improve and test</h2>
       <p>
-        An optional helper proposes one small edit, tests it on a fresh run under the same requirements, and keeps it
-        only if a requirement improved and none regressed. It stops after three edits. It cannot change your
-        requirements, and an edit that drops most of your wording or introduces a number you did not supply is blocked
-        before testing. Every attempt is listed, including rejected ones. A kept edit is rerun twice more to see if it
-        holds.
+        An optional helper proposes one small edit, tests it on a fresh run under the same checks, and has the new
+        answer reviewed against your goal. It keeps the edit only if a check improved, none regressed, and the review
+        raised no drift concern. It stops after three edits. It cannot change your checks. An edit that drops most of
+        your wording, or introduces a number, date, or name you did not supply, is blocked before testing. It will not
+        force an exact phrase into your prompt just to pass a check: it stops and asks you. Every attempt is listed,
+        including rejected ones, and a kept edit is rerun twice more to see if it holds.
       </p>
 
       <h2>Your text</h2>

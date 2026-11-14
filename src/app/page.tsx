@@ -5,7 +5,7 @@ export default function Home() {
   return (
     <>
       <WaveField />
-      <Nav />
+      <Nav motion />
       <main>
         <Landing />
       </main>

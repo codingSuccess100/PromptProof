@@ -27,6 +27,25 @@ export function foldLoose(text: string): string {
     .replace(/[^a-z0-9]+/g, "");
 }
 
+/**
+ * Finds the text in an answer that matches a literal once accents, punctuation, and case are ignored.
+ * Returns it exactly as the answer wrote it ("L'H\u00f4pital" for the literal "LHopital"), or null.
+ */
+export function findVariant(output: string, literal: string): string | null {
+  const target = foldLoose(literal);
+  if (target.length < 3) return null;
+  const text = normalizeText(output);
+  const starts = [0, ...Array.from(text.matchAll(/[\s(\["]+/g)).map((m) => (m.index ?? 0) + m[0].length)];
+  for (const start of starts) {
+    for (let end = start + 1; end <= Math.min(text.length, start + literal.length * 3 + 8); end++) {
+      const folded = foldLoose(text.slice(start, end));
+      if (folded.length > target.length || !target.startsWith(folded)) break;
+      if (folded === target) return text.slice(start, end);
+    }
+  }
+  return null;
+}
+
 export function categoryOf(kind: CheckKind, literal = false): CheckCategory {
   if (kind === "maxWords") return "length";
   if (kind === "noListFormatting" || kind === "numberedItemsExactly" || kind === "onlyNumberedLines") return "format";

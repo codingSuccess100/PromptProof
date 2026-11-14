@@ -60,7 +60,7 @@ function draw(ctx: CanvasRenderingContext2D, w: number, h: number, t: number, ba
   ctx.globalCompositeOperation = "source-over";
 }
 
-/** `calm` is for working pages: a dim, even backdrop that stays out of the way of text. */
+/** `calm` is for working pages: one dim, still frame that stays out of the way of text. It never animates. */
 export default function WaveField({ calm = false }: { calm?: boolean }) {
   const wrap = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -107,7 +107,7 @@ export default function WaveField({ calm = false }: { calm?: boolean }) {
     }
     const start = () => {
       cancelAnimationFrame(frame);
-      if (!reduced.matches && !document.hidden && !paused) frame = requestAnimationFrame(loop);
+      if (!calm && !reduced.matches && !document.hidden && !paused) frame = requestAnimationFrame(loop);
     };
     const onMotion = (event: Event) => {
       paused = !!(event as CustomEvent<boolean>).detail;

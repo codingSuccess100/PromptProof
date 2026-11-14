@@ -15,6 +15,7 @@ export function contextFor(task: Task): ContextSnapshot {
   const fingerprint = JSON.stringify({
     taskId: task.id,
     material: task.sourceMaterial,
+    goal: task.goal,
     checks: task.checks.map((c) => [c.id, c.kind, c.pattern ?? "", c.flags ?? "", c.value ?? "", c.label]),
     scorer: SCORER_VERSION,
     model,
@@ -25,6 +26,7 @@ export function contextFor(task: Task): ContextSnapshot {
     taskId: task.id,
     title: task.title,
     material: task.sourceMaterial,
+    goal: task.goal,
     criteria: task.checks.map((c) => ({ id: c.id, label: c.label, category: categoryOf(c.kind, !!c.literals) })),
     scorerVersion: SCORER_VERSION,
     model,

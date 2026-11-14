@@ -10,6 +10,9 @@ export const TASKS: Task[] = [
     id: "cfo-summary",
     title: "Feedback summary for the CFO",
     blurb: "Summarize customer comments for one specific reader.",
+    goal: "A short summary of this month's customer feedback, written for Dana Ruiz, the CFO, to read before she meets the billing vendor.",
+    goalRestore: "Summarize this customer feedback for our CFO.",
+    mockIntent: { expects: "summar|recap|overview|digest", conflicts: "(write|email|message|talk|speak|reply|respond)\\s+(to|with)\\s+(the|our|a)?\\s*(billing\\s+)?vendor|ask\\s+(them|the vendor)|request(ing)?\\s+(a\\s+)?refund" },
     situationCard: [
       "You are writing for Dana Ruiz, the CFO.",
       "She is about to meet the billing vendor, so lead with the billing errors, not the delivery complaints.",
@@ -75,6 +78,9 @@ export const TASKS: Task[] = [
     id: "extension-email",
     title: "Extension email to a professor",
     blurb: "Compose a short message that carries the right facts.",
+    goal: "An email to Professor Lin asking to extend the Assignment 3 deadline for CS 320.",
+    goalRestore: "Write an email to my professor asking for an extension on an assignment.",
+    mockIntent: { expects: "email|message|write to|ask", conflicts: "summar|essay|excuse note for" },
     situationCard: [
       "Professor Lin teaches your course, CS 320.",
       "Assignment 3 is due Thursday. You need until Monday.",
@@ -130,6 +136,9 @@ export const TASKS: Task[] = [
     id: "action-items",
     title: "Action items for a tracker",
     blurb: "Pull the right items out of messy notes, in an exact format.",
+    goal: "A list of Priya's action items pulled from the meeting notes, ready to paste into a tracker.",
+    goalRestore: "From these meeting notes, list the action items.",
+    mockIntent: { expects: "action items?|tasks?|to-?dos?|list", conflicts: "summar(y|ize) the meeting|write (an|a) (email|recap)" },
     situationCard: [
       "You manage Priya and only want her action items.",
       "Marcus and Dana report to someone else, so leave their names out.",
@@ -206,5 +215,6 @@ export function toPublicTask(task: Task): PublicTask {
     sourceMaterial: task.sourceMaterial,
     checkCount: task.checks.length,
     criteria: task.checks.map((c) => c.label),
+    goal: task.goal,
   };
 }

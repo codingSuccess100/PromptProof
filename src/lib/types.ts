@@ -42,6 +42,12 @@ export interface Task {
   /** Material the model receives with every prompt. Empty string if none. */
   sourceMaterial: string;
   checks: CheckSpec[];
+  /** The user goal in plain language: audience, deliverable, important facts. Used for goal review, never for scoring. */
+  goal: string;
+  /** For practice tasks: a neutral opening that restores the intended recipient and deliverable. Offered, never applied silently. */
+  goalRestore?: string;
+  /** Offline-mock only: wording that suggests the prompt asks for the intended deliverable, or for something else. */
+  mockIntent?: { expects: string; conflicts: string };
 }
 
 /** What the browser shows before a run. The generation model never receives the scenario card or the criteria. */
@@ -54,6 +60,8 @@ export interface PublicTask {
   checkCount: number;
   /** The requirements, in plain words. Shown to the learner up front. There are no hidden gotchas. */
   criteria: string[];
+  /** One-sentence statement of what the exercise asks for. */
+  goal: string;
 }
 
 export interface CheckResult {
@@ -120,7 +128,10 @@ export interface CustomCheck {
 export interface CustomTaskInput {
   /** Optional text the model should work on. Sent to the model with the prompt. */
   material: string;
+  /** Rule-based checks the user has confirmed. May be empty when a goal is given: the answer is then unscored. */
   checks: CustomCheck[];
+  /** What the user wants from the answer, in their own words. Used for goal review only. */
+  goal?: string;
 }
 
 export const CUSTOM_TASK_ID = "custom";
@@ -139,6 +150,7 @@ export interface ContextSnapshot {
   taskId: string;
   title: string;
   material: string;
+  goal: string;
   criteria: { id: string; label: string; category: CheckCategory }[];
   scorerVersion: string;
   model: string;
@@ -214,6 +226,8 @@ export interface AblationResult {
   flippedChecks: string[];
   /** Per-check pass counts, only for checks whose count changed. */
   changes: CheckChange[];
+  /** Requirements this one instruction appears to carry together. With more than one, the test cannot separate them. */
+  bundled: string[];
   /** Runs that returned an answer. A failed request is not a zero score. */
   validRuns: number;
   failedRuns: number;
@@ -228,15 +242,67 @@ export interface XrayRequest {
 }
 
 export interface SuggestRequest {
-  /** Plain-language description of what a good answer must do. */
+  /** What the user wants from the answer, in ordinary language. */
   goal: string;
 }
 
+/**
+ * suggestions: every part of the goal became a rule-based check.
+ * partial: some parts became checks, the rest is left for goal review.
+ * needs_clarification: nothing mechanical yet. A question and editable interpretations are offered.
+ */
+export type SuggestStatus = "suggestions" | "partial" | "needs_clarification";
+
 export interface SuggestResult {
-  /** Proposed by a model (or by simple rules in mock mode). The user must review them. */
+  status: SuggestStatus;
+  /** Proposed checks. They are proposals until the user accepts them. */
   checks: CustomCheck[];
+  /** Parts of the goal that a rule cannot verify. Covered by goal review, not scored. */
+  qualitative: string[];
+  clarify: { question: string; options: string[] } | null;
+  /** A contradiction among the proposed checks, if there is one. */
+  warning: string | null;
   model: string;
   mock: boolean;
+}
+
+export type GoalFindingKind =
+  | "task_mismatch"
+  | "recipient_changed"
+  | "missing_fact"
+  | "criteria_gap"
+  | "contradiction"
+  | "off_topic"
+  | "other";
+
+/** One model-assisted observation. It is a suggested interpretation, never a measurement. */
+export interface GoalFinding {
+  kind: GoalFindingKind;
+  what: string;
+  /** Exact quotes, kept only when they really appear in the prompt or the answer. */
+  promptEvidence: string | null;
+  answerEvidence: string | null;
+  why: string;
+  suggestedEdit: string | null;
+  /** "replace" when the edit is a new opening for the prompt, "add" when it can be appended. */
+  editMode: "add" | "replace";
+}
+
+export interface GoalReview {
+  /** aligned: no concerns found. concerns: see findings. unclear: the reviewer could not tell. unavailable: no goal to review against. */
+  status: "aligned" | "concerns" | "unclear" | "unavailable";
+  summary: string;
+  findings: GoalFinding[];
+  model: string;
+  mock: boolean;
+  ms: number;
+}
+
+export interface ReviewRequest {
+  taskId: string;
+  prompt: string;
+  output: string;
+  custom?: CustomTaskInput;
 }
 
 export interface XrayResult {
@@ -282,5 +348,9 @@ export interface ImproveStep {
   run: RunResult | null;
   /** Why the candidate was blocked before testing, if it was. */
   blocked: string | null;
+  /** Set when the helper will not decide alone and the user has to choose. */
+  needsChoice: string | null;
+  /** Goal review of the candidate's answer, when a goal exists. */
+  review: GoalReview | null;
   modelCalls: number;
 }

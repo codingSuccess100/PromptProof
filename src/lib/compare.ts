@@ -31,6 +31,7 @@ export function compareChecks(before: CheckResult[], after: CheckResult[]): Chec
 /** Null when the two runs must not be compared. Otherwise a plain-language conclusion. */
 export function conclusion(before: RunResult, after: RunResult): string | null {
   if (!sameContext(before, after)) return null;
+  if (after.checks.length === 0) return "There are no rule-based checks in this experiment, so nothing was scored. Read both answers and the goal review.";
   const d = compareChecks(before.checks, after.checks);
   const names = (list: CheckResult[]) => list.map((c) => c.label).join("; ");
   if (before.prompt.trim() === after.prompt.trim()) {
@@ -39,14 +40,14 @@ export function conclusion(before: RunResult, after: RunResult): string | null {
       : "Same prompt, different result. The model's answers vary between runs, so treat single results with care.";
   }
   if (d.improved.length > 0 && d.regressed.length === 0) {
-    return `The revision met ${d.improved.length} more requirement${d.improved.length === 1 ? "" : "s"} in this run: ${names(d.improved)}. One run each, so rerun to confirm.`;
+    return `The revision met ${d.improved.length} more requirement${d.improved.length === 1 ? "" : "s"} in its test run: ${names(d.improved)}.`;
   }
   if (d.improved.length > 0 && d.regressed.length > 0) {
     return `A trade: the revision gained ${names(d.improved)} and lost ${names(d.regressed)}.`;
   }
   if (d.regressed.length > 0) return `The revision did worse in this run. It lost: ${names(d.regressed)}.`;
   return d.unchangedFail.length > 0
-    ? "No improvement found. The same requirements passed and failed."
+    ? "No improvement found in the rule-based checks. The same ones passed and failed."
     : "Both versions met every requirement. If the revision is shorter, it is a shorter tested alternative, not automatically a better one.";
 }
 

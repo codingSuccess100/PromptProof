@@ -71,7 +71,7 @@ export function buildModelInput(task: Task, prompt: string): string {
 // When the API says so, we drop that setting for the model and remember it.
 const unsupported = new Map<string, Set<string>>();
 
-function requestBody(model: string, input: string): Record<string, unknown> {
+function requestBody(model: string, input: string, json = false): Record<string, unknown> {
   const skip = unsupported.get(model) ?? new Set<string>();
   const body: Record<string, unknown> = {
     model,
@@ -81,6 +81,8 @@ function requestBody(model: string, input: string): Record<string, unknown> {
   // No reasoning step: faster, cheaper, and it lets us set temperature to 0 for repeatable answers.
   if (!skip.has("reasoning_effort")) body.reasoning_effort = process.env.OPENAI_REASONING_EFFORT || "none";
   if (!skip.has("temperature")) body.temperature = 0;
+  // Ask for a JSON object when the caller needs structured output. Dropped automatically if a model rejects it.
+  if (json && !skip.has("response_format")) body.response_format = { type: "json_object" };
   return body;
 }
 
@@ -94,18 +96,18 @@ function safeNote(status: number, code: string, message: string): string {
 }
 
 /** One request, no retry on failure. Exposed so the benchmark can see statuses and timings. */
-export async function rawCall(input: string, key: string, model: string): Promise<RawReply> {
+export async function rawCall(input: string, key: string, model: string, json = false): Promise<RawReply> {
   const started = Date.now();
   const problem = keyProblem(key);
   if (problem) return { status: 0, text: "", ms: 0, note: problem };
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
       const res = await fetch(ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-        body: JSON.stringify(requestBody(model, input)),
+        body: JSON.stringify(requestBody(model, input, json)),
         signal: controller.signal,
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -122,7 +124,7 @@ export async function rawCall(input: string, key: string, model: string): Promis
       // Adapt once per optional setting the model does not accept, then try again.
       if (res.status === 400) {
         const skip = unsupported.get(model) ?? new Set<string>();
-        const bad = ["temperature", "reasoning_effort"].find(
+        const bad = ["temperature", "reasoning_effort", "response_format"].find(
           (name) => !skip.has(name) && (param === name || message.includes(name)),
         );
         if (bad) {
@@ -151,10 +153,10 @@ export function droppedSettings(model: string): string[] {
   return [...(unsupported.get(model) ?? [])];
 }
 
-async function callOpenAI(input: string, key: string, model: string): Promise<string> {
+async function callOpenAI(input: string, key: string, model: string, json = false): Promise<string> {
   let last: RawReply | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    last = await rawCall(input, key, model);
+    last = await rawCall(input, key, model, json);
     if (last.status === 200 && last.text) return last.text;
     // Retry once on rate limits, server errors, timeouts, and empty answers only.
     const retryable = last.status === 429 || last.status >= 500 || last.status === 0 || last.status === 200;
@@ -178,11 +180,11 @@ export async function generate(task: Task, prompt: string): Promise<ModelReply> 
 }
 
 /** Free-form call with no task attached. Returns null in mock mode so the caller can use a labeled stand-in. */
-export async function generateText(input: string): Promise<ModelReply | null> {
+export async function generateText(input: string, options: { json?: boolean } = {}): Promise<ModelReply | null> {
   const key = apiKey();
   if (!key) return null;
   const model = configuredModel();
-  return { text: await callOpenAI(input, key, model), model, mock: false };
+  return { text: await callOpenAI(input, key, model, !!options.json), model, mock: false };
 }
 
 /** Runs async jobs with a cap on how many are in flight at once. Results keep input order. */

@@ -1,4 +1,4 @@
-import { foldLoose } from "./checks";
+import { findVariant, foldLoose } from "./checks";
 import { alternativesFor } from "./custom";
 import { promptMentions } from "./ghost";
 import type { CheckResult, Diagnosis, FrictionFinding, Task } from "./types";
@@ -26,14 +26,33 @@ export function diagnose(
     const nearMiss =
       spec.kind === "matches" && (spec.literals ?? []).find((literal) => foldLoose(literal).length > 2 && foldLoose(output).includes(foldLoose(literal)));
     if (nearMiss) {
+      const written = findVariant(output, nearMiss);
       found.push({
         ...base,
         kind: "possible_checker_mismatch",
-        evidence: `The check looks for the exact text "${nearMiss}". The answer contains a close variant that differs in accents, punctuation, or spacing.`,
+        evidence: `The check looks for the exact text "${nearMiss}". The answer ${written ? `wrote "${written}"` : "contains a close variant"}, which differs only in accents, punctuation, or spacing.`,
         interpretation:
-          "The answer may be fine and the check too strict. Decide whether the variant is acceptable. This check only tests that the text appears. It cannot tell whether the idea is explained correctly.",
-        suggestedEdit: null,
-        alternatives: alternativesFor(nearMiss),
+          "The answer seems to cover this, and the check may be too literal. Is that exact spelling what you need? If so, keep it. If not, accept the other spelling. This check only tests that the text appears. It cannot tell whether the idea is explained correctly.",
+        suggestedEdit: spec.ghostClause,
+        alternatives: Array.from(new Set([...(written && written !== nearMiss ? [written] : []), ...alternativesFor(nearMiss)])).slice(0, 3),
+      });
+      continue;
+    }
+
+    // 1b. An exact-text requirement whose text appears nowhere in the user's own inputs.
+    // Telling the model to emit it would pass the check without showing the topic was covered.
+    const context = foldLoose(`${prompt} ${task.goal} ${task.sourceMaterial}`);
+    const orphan = spec.kind === "matches" && (spec.literals ?? []).length > 0 && !(spec.literals ?? []).some((l) => context.includes(foldLoose(l)));
+    if (orphan) {
+      const literal = spec.literals![0];
+      found.push({
+        ...base,
+        kind: "possible_checker_mismatch",
+        evidence: `The check looks for the exact text "${literal}". That text appears nowhere in your prompt, goal, or notes, and not in the answer.`,
+        interpretation:
+          "An exact-text check shows that a string appears. It cannot show that a topic was covered or explained correctly. If you need this exact wording, keep it and tell the AI to include it. If you meant the topic, this check is the wrong tool: remove it and rely on the goal review, or accept the usual spelling.",
+        suggestedEdit: spec.ghostClause,
+        alternatives: alternativesFor(literal),
       });
       continue;
     }

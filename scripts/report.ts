@@ -8,11 +8,16 @@
 // Writes promptproof-report.md. The API key is never written to the report.
 // With no key it stops with an error. `npm run report:mock` runs the offline mock instead,
 // only to show the report shape.
-// A full run makes about 50 small model calls.
+// 5. Suggest checks on six ordinary-language goals.
+// 6. Goal review on the vendor-message case, an on-task case, and the calculus case.
+// A full run makes about 65 small model calls.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { runTask, xrayTask } from "../src/lib/engine";
 import { FALLBACK_MODELS, buildModelInput, configuredModel, droppedSettings, rawCall } from "../src/lib/model";
+import { buildCustomTask } from "../src/lib/custom";
+import { reviewGoal } from "../src/lib/review";
+import { suggestChecks } from "../src/lib/suggest";
 import { getTask } from "../src/lib/tasks";
 import type { RunResult, XrayResult } from "../src/lib/types";
 
@@ -247,10 +252,71 @@ async function xraySection() {
   });
   const persona = good.map((x) => x.ablations[0]?.label);
   verdicts.push({
-    name: 'Demo moment: "You are an expert analyst." shows no measured effect',
+    name: 'Observation only: label measured for "You are an expert analyst." (whatever it is, the app reports it as measured)',
     pass: persona.every((l) => l === "no_measured_effect"),
     note: persona.join(", "),
   });
+}
+
+async function suggestSection() {
+  out("## 5. Suggest checks, on ordinary language");
+  out();
+  out("| What the user typed | Outcome | Proposed checks | Left to goal review | Question asked |");
+  out("|---|---|---|---|---|");
+  const cases = [
+    "Under 80 words and one paragraph.",
+    "A comprehensive study plan.",
+    "Explain L\u2019H\u00f4pital\u2019s rule with examples.",
+    "Keep the exact ticket ID ABC-123.",
+    "Give me a clear study plan with examples and no more than 300 words.",
+    "One paragraph, and exactly 3 numbered steps.",
+  ];
+  let deadEnds = 0;
+  let failures = 0;
+  for (const goal of cases) {
+    try {
+      const r = await suggestChecks(goal);
+      if (r.checks.length === 0 && !r.clarify) deadEnds++;
+      out(`| ${cell(goal)} | ${r.status}${r.warning ? " (contradiction flagged)" : ""} | ${cell(r.checks.map((c) => `${c.kind}${c.value ? " " + c.value : ""}${c.text ? " \"" + c.text + "\"" : ""}`).join("; ")) || "none"} | ${cell(r.qualitative.join(", ")) || "none"} | ${cell(r.clarify?.question ?? "") || "none"} |`);
+    } catch (err) {
+      failures++;
+      out(`| ${cell(goal)} | REQUEST FAILED | | | ${cell(err instanceof Error ? err.message : "error")} |`);
+    }
+  }
+  out();
+  verdicts.push({ name: "Suggest checks never dead-ends", pass: failures === cases.length ? null : deadEnds === 0, note: `${deadEnds} dead ends, ${failures} failed requests out of ${cases.length}` });
+}
+
+async function reviewSection() {
+  out("## 6. Goal review, kept separate from the rule-based checks");
+  out();
+  const VENDOR = "Write to our billing vendor asking them to refund the $1,200 from last month by Friday. Lead with the billing errors. One plain paragraph, no bullet points, under 60 words.";
+  const calc = buildCustomTask({ goal: "A comprehensive plan to study for my calculus test", material: "", checks: [{ kind: "includes", text: "LHopital" }, { kind: "maxWords", value: 60 }] });
+  const cases: { name: string; task: NonNullable<typeof task>; prompt: string; expectConcern: boolean }[] = [
+    { name: "CFO task, vendor-message prompt", task: task!, prompt: VENDOR, expectConcern: true },
+    { name: "CFO task, on-task prompt", task: task!, prompt: STRONG_PROMPT, expectConcern: false },
+  ];
+  if ("task" in calc) cases.push({ name: "Calculus goal with an odd exact string and a 60 word limit", task: calc.task, prompt: "I have a calculus midterm in 5 days. Give me a comprehensive study plan. Include LHopital. Use 60 words or fewer.", expectConcern: true });
+  out("| Case | Rule-based checks | Goal review | First finding | Evidence quoted from the prompt | Suggested edit |");
+  out("|---|---|---|---|---|---|");
+  let asExpected = 0;
+  let done = 0;
+  for (const c of cases) {
+    try {
+      const run = await runTask(c.task, c.prompt);
+      const review = await reviewGoal(c.task, run.prompt, run.output);
+      done++;
+      const f = review.findings[0];
+      if ((review.status === "concerns") === c.expectConcern) asExpected++;
+      out(`| ${c.name} | ${run.score} of ${run.total} | ${review.status} | ${cell(f ? `${f.kind}: ${f.what}` : review.summary)} | ${cell(f?.promptEvidence ?? "") || "none"} | ${cell(f?.suggestedEdit ?? "") || "none"} |`);
+    } catch (err) {
+      out(`| ${c.name} | REQUEST FAILED | | ${cell(err instanceof Error ? err.message : "error")} | | |`);
+    }
+  }
+  out();
+  out("The review is model-assisted and can be wrong. Read the three rows and judge whether the findings are sensible.");
+  out();
+  verdicts.push({ name: "Goal review flags the vendor prompt and the odd calculus criteria, and not the on-task prompt", pass: mock ? null : done === cases.length ? asExpected === cases.length : null, note: `${asExpected} of ${cases.length} as expected, ${done} completed` });
 }
 
 // ---------- main ----------
@@ -297,6 +363,8 @@ async function main() {
 
   await promptSection();
   await xraySection();
+  await suggestSection();
+  await reviewSection();
 }
 
 main()

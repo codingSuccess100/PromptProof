@@ -2,7 +2,7 @@ import { scoreOutput } from "./checks";
 import { contextFor } from "./context";
 import { diagnose } from "./diagnose";
 import { detectFriction } from "./friction";
-import { ghostSuggestions } from "./ghost";
+import { ghostSuggestions, promptMentions } from "./ghost";
 import { generate, mapLimit, modelInfo } from "./model";
 import { segmentPrompt, withoutChunk } from "./segment";
 import type { AblationLabel, AblationResult, CheckChange, CheckResult, RunResult, Task, XrayResult } from "./types";
@@ -18,7 +18,6 @@ export function validatePrompt(prompt: unknown): string | null {
 /** One run: the answer, the checks, the context it was evaluated in, and a diagnosis of each failure. One model call. */
 export async function runTask(task: Task, prompt: string): Promise<RunResult> {
   const started = Date.now();
-  if (task.checks.length === 0) throw new Error("there are no requirements to evaluate against");
   const reply = await generate(task, prompt);
   const { checks, score, total } = scoreOutput(task, reply.text);
   const chunks = segmentPrompt(prompt);
@@ -149,13 +148,17 @@ export async function xrayTask(
       label: labelFromChanges(changes, baselineRuns.length, mine.length),
       flippedChecks: mine.length ? flipped(baselineRuns[0].checks, mine[0].checks) : [],
       changes,
+      // When one instruction carries several requirements, removing it cannot say which part did what.
+      bundled: task.checks.filter((c) => promptMentions(c.promptCue, chunk.text)).map((c) => c.label),
       validRuns: mine.length,
       failedRuns: runs - mine.length,
     };
   });
 
   let caution: string | null = null;
-  if (baselineScore === 0) {
+  if (task.checks.length === 0) {
+    caution = "There are no rule-based checks, so the X-ray has nothing to measure.";
+  } else if (baselineScore === 0) {
     caution =
       "The unchanged prompt met none of the requirements, so removing an instruction could not make a check fail. \"No change detected\" here says very little about whether an instruction is needed.";
   } else if (task.checks.length < 3) {

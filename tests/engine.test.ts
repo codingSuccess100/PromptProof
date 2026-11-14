@@ -201,7 +201,8 @@ describe("X-ray ablation (mock model)", () => {
   });
 });
 
-import { buildCustomTask, cleanCheck, mockSuggest, parseSuggestedChecks, resolveTask } from "@/lib/custom";
+import { buildCustomTask, cleanCheck, resolveTask } from "@/lib/custom";
+import { mockSuggest, parseSuggestedChecks } from "@/lib/suggest";
 
 describe("own-prompt mode", () => {
   const input = {
@@ -294,8 +295,14 @@ import { labelFromChanges } from "@/lib/engine";
 import { guardRevision, improveStep } from "@/lib/improve";
 import { buildModelInput } from "@/lib/model";
 
-const custom = (checks: unknown[], material = "") => {
-  const built = buildCustomTask({ material, checks });
+const buildGoalOnly = (goal: string) => {
+  const built = buildCustomTask({ material: "", checks: [], goal });
+  if (!("task" in built)) throw new Error(built.error);
+  return built.task;
+};
+
+const custom = (checks: unknown[], material = "", goal = "a goal") => {
+  const built = buildCustomTask({ material, checks, goal });
   if (!("task" in built)) throw new Error(built.error);
   return built.task;
 };
@@ -371,7 +378,7 @@ describe("evaluation integrity", () => {
     const { diagnose } = await import("@/lib/diagnose");
     const [d] = diagnose(task, "Explain limits.", "Apply L'Hôpital's rule to 0/0 forms.", fake, []);
     expect(d.kind).toBe("possible_checker_mismatch");
-    expect(d.suggestedEdit).toBeNull();
+    expect(d.alternatives).toBeDefined();
     expect(d.interpretation).toMatch(/cannot tell whether the idea is explained correctly/);
   });
 
@@ -400,8 +407,14 @@ describe("evaluation integrity", () => {
     expect("error" in buildCustomTask({ material: "", checks: [{ kind: "singleParagraph" }, { kind: "numberedItems", value: 3 }] })).toBe(true);
   });
 
-  it("a run with no requirements is refused instead of scoring perfectly", async () => {
-    await expect(runTask({ ...cfo, checks: [] }, "Summarize.")).rejects.toThrow(/no requirements/);
+  it("with a goal and no checks the run is unscored, and with neither it is refused", async () => {
+    const unscored = custom([], "");
+    expect(unscored).toBeDefined();
+    const run = await runTask(buildGoalOnly("A comprehensive study plan"), "Help me study.");
+    expect(run.total).toBe(0);
+    expect(run.checks).toEqual([]);
+    expect("error" in buildCustomTask({ material: "", checks: [] })).toBe(true);
+    expect("error" in buildCustomTask({ material: "", checks: [], goal: "  " })).toBe(true);
   });
 
   it("the generation request never contains the scenario card or the rubric", () => {
@@ -518,6 +531,226 @@ describe("improve and test", () => {
   it("stops when nothing is failing", async () => {
     const step = await improveStep(cfo, STRONG["cfo-summary"], "fine", [], []);
     expect(step.run).toBeNull();
-    expect(step.blocked).toMatch(/already met/);
+    expect(step.blocked).toMatch(/already passes/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Goal layer: suggestions, goal review, and the two reported failures.
+// ---------------------------------------------------------------------------
+import { findVariant } from "@/lib/checks";
+import { findTensions } from "@/lib/custom";
+import { unsupportedLiteral } from "@/lib/improve";
+import { parseReview, reviewGoal } from "@/lib/review";
+import { extractMechanical, parseSuggestion, suggestChecks } from "@/lib/suggest";
+
+describe("suggest checks handles ordinary language", () => {
+  it("clear mechanical requirements become proposed checks", async () => {
+    const r = await suggestChecks("Under 80 words, include March 3, and use one paragraph.");
+    expect(r.status).toBe("suggestions");
+    expect(r.checks).toEqual(expect.arrayContaining([{ kind: "maxWords", value: 80 }, { kind: "includes", text: "March 3" }, { kind: "singleParagraph" }]));
+    expect(r.clarify).toBeNull();
+  });
+
+  it("mixed goals keep the mechanical part and hand the rest to goal review", async () => {
+    const r = await suggestChecks("Give me a clear study plan with examples and no more than 300 words.");
+    expect(r.status).toBe("partial");
+    expect(r.checks).toEqual([{ kind: "maxWords", value: 300 }]);
+    expect(r.qualitative).toEqual(expect.arrayContaining(["clear", "with examples"]));
+  });
+
+  it("a vague goal gets a clarifying question and options, never a dead end", async () => {
+    const r = await suggestChecks("A comprehensive study plan");
+    expect(r.status).toBe("needs_clarification");
+    expect(r.checks).toEqual([]);
+    expect(r.clarify!.question).toMatch(/Comprehensive/);
+    expect(r.clarify!.options.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("explaining a topic does not turn the topic into a required string", async () => {
+    const r = await suggestChecks("Explain L\u2019H\u00f4pital\u2019s rule with examples");
+    expect(r.checks).toEqual([]);
+    expect(r.status).toBe("needs_clarification");
+    expect(r.qualitative).toContain("with examples");
+  });
+
+  it("keeps an exact identifier the user asked to keep", () => {
+    expect(extractMechanical("Keep the exact ticket ID ABC-123")).toEqual([{ kind: "includes", text: "ABC-123" }]);
+  });
+
+  it("reports a contradiction among proposals instead of hiding it", async () => {
+    const r = await suggestChecks('One paragraph, and exactly 3 numbered steps.');
+    expect(r.warning).toMatch(/one format/);
+  });
+
+  it("reads near-miss model output and rejects unreadable output", () => {
+    const wrapped = parseSuggestion('```json\n{"checks":[{"kind":"max_words","value":80},{"kind":"MaxWords","value":80},{"kind":"vibes"}],"qualitative":["clear"],"clarify":null}\n```');
+    expect(wrapped!.checks).toEqual([{ kind: "maxWords", value: 80 }]);
+    expect(wrapped!.qualitative).toEqual(["clear"]);
+    expect(parseSuggestion("I could not do that.")).toBeNull();
+    expect(parseSuggestion("{not json}")).toBeNull();
+    expect(parseSuggestion('{"checks":[],"clarify":{"question":"What length?","options":["Short","Long"]}}')!.clarify).toEqual({ question: "What length?", options: ["Short", "Long"] });
+  });
+
+  it("a provider failure is an error, not an unsupported goal", async () => {
+    const model = await import("@/lib/model");
+    const spy = vi.spyOn(model, "generateText").mockRejectedValue(new Error("the model timed out"));
+    try {
+      await expect(suggestChecks("A comprehensive study plan")).rejects.toThrow(/timed out/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("an unreadable model reply still keeps what the user stated outright", async () => {
+    const model = await import("@/lib/model");
+    const spy = vi.spyOn(model, "generateText").mockResolvedValue({ text: "Sorry, here you go!", model: "x", mock: false });
+    try {
+      expect((await suggestChecks("Under 80 words and one paragraph.")).checks.length).toBe(2);
+      await expect(suggestChecks("A comprehensive study plan")).rejects.toThrow(/could not be read/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("goal review stays separate from rule-based checks", () => {
+  const VENDOR = "Write to our billing vendor asking them to refund the $1,200 from last month by Friday. Lead with the billing errors. One plain paragraph, no bullet points, under 60 words.";
+
+  it("the vendor-message prompt passes all five checks and is still flagged as a task mismatch", async () => {
+    const run = await runTask(cfo, VENDOR);
+    expect(run.score).toBe(5);
+    const review = await reviewGoal(cfo, run.prompt, run.output);
+    expect(review.status).toBe("concerns");
+    expect(review.findings[0].kind).toBe("task_mismatch");
+    expect(review.findings[0].promptEvidence).toMatch(/vendor/i);
+    expect(review.findings[0].suggestedEdit).toBe("Summarize this customer feedback for our CFO.");
+    expect(review.findings[0].editMode).toBe("replace");
+    // The review never rewrites a mechanical result.
+    expect(run.checks.every((c) => c.pass)).toBe(true);
+  });
+
+  it("an on-task prompt is not flagged, so no flaw is manufactured", async () => {
+    const review = await reviewGoal(cfo, STRONG["cfo-summary"], "fine");
+    expect(review.status).toBe("aligned");
+    expect(review.findings).toEqual([]);
+  });
+
+  it("mentioning the CFO is not what decides the review", async () => {
+    const review = await reviewGoal(cfo, "Email the vendor and cc our CFO asking for refunds.", "x");
+    expect(review.status).toBe("concerns");
+  });
+
+  it("keeps only quotes that really appear, and the status follows the findings", () => {
+    const prompt = "Write to the vendor about refunds.";
+    const answer = "Dear vendor, please refund us.";
+    const parsed = parseReview(
+      JSON.stringify({ status: "aligned", summary: "s", findings: [{ kind: "recipient_changed", what: "Addressed to the vendor.", promptEvidence: "Write to the vendor", answerEvidence: "Dear CFO", why: "w", suggestedEdit: "Summarize for the CFO.", editMode: "replace" }, { kind: "nonsense", what: "" }] }),
+      prompt,
+      answer,
+    )!;
+    expect(parsed.status).toBe("concerns");
+    expect(parsed.findings.length).toBe(1);
+    expect(parsed.findings[0].promptEvidence).toBe("Write to the vendor");
+    expect(parsed.findings[0].answerEvidence).toBeNull();
+    expect(parseReview("not json", prompt, answer)).toBeNull();
+  });
+
+  it("no goal means no review, not a guess", async () => {
+    const review = await reviewGoal({ ...cfo, goal: "" }, "x", "y");
+    expect(review.status).toBe("unavailable");
+  });
+});
+
+describe("calculus scenario: topic versus exact string", () => {
+  const goal = "A comprehensive plan to study for my calculus test";
+  const task = custom([{ kind: "includes", text: "LHopital" }, { kind: "maxWords", value: 60 }], "", goal);
+
+  it("finds the spelling the answer actually used", () => {
+    expect(findVariant("First review L\u2019H\u00f4pital\u2019s rule for limits.", "LHopital")).toBe("L'H\u00f4pital");
+    expect(findVariant("Nothing relevant here.", "LHopital")).toBeNull();
+  });
+
+  it("asks whether the literal spelling is intended instead of calling it a missing instruction", async () => {
+    const { diagnose } = await import("@/lib/diagnose");
+    const failed = task.checks.map((c) => ({ id: c.id, label: c.label, pass: c.kind !== "matches", detail: "not found", category: "exact_text" as const }));
+    const [d] = diagnose(task, "Help me study calculus.", "Day 2: L\u2019H\u00f4pital\u2019s rule.", failed, []);
+    expect(d.kind).toBe("possible_checker_mismatch");
+    expect(d.evidence).toContain("L'H\u00f4pital");
+    expect(d.alternatives![0]).toBe("L'H\u00f4pital");
+    expect(d.interpretation).toMatch(/Is that exact spelling what you need/);
+  });
+
+  it("the helper will not force an unsupported exact string into the prompt", async () => {
+    const prompt = "I have a calculus midterm in 5 days. Give me a comprehensive study plan.";
+    expect(unsupportedLiteral(task, prompt, ["c1"])).toEqual({ checkLabel: task.checks[0].label, literal: "LHopital" });
+    const stepResult = await improveStep(task, prompt, "A plan about limits and derivatives.", ["c1"], []);
+    expect(stepResult.run).toBeNull();
+    expect(stepResult.needsChoice).toMatch(/Decide whether that spelling is acceptable|appears nowhere in your prompt/);
+    // Once the user puts the text in their own prompt, it is their deliberate constraint.
+    expect(unsupportedLiteral(task, `${prompt} Cover LHopital.`, ["c1"])).toBeNull();
+  });
+
+  it("warns that a short word limit may fight a request for depth, and leaves the choice to the user", () => {
+    const notes = findTensions(goal, "Give me a study plan.", [{ kind: "maxWords", value: 60 }]);
+    expect(notes[0]).toMatch(/comprehensive/);
+    expect(notes[0]).toMatch(/Keep the limit if an outline is what you want/);
+    expect(findTensions("A short reminder", "x", [{ kind: "maxWords", value: 60 }])).toEqual([]);
+    expect(findTensions(goal, "x", [{ kind: "maxWords", value: 600 }])).toEqual([]);
+  });
+
+  it("accepting another spelling changes the evaluation context", async () => {
+    const strict = await runTask(custom([{ kind: "includes", text: "LHopital" }], "", goal), "Study plan please.");
+    const relaxed = await runTask(custom([{ kind: "includes", text: "LHopital", alternatives: ["L'H\u00f4pital"] }], "", goal), "Study plan please.");
+    expect(sameContext(strict, relaxed)).toBe(false);
+    expect(conclusion(strict, relaxed)).toBeNull();
+  });
+});
+
+describe("helper guardrails beyond numbers", () => {
+  it("blocks an invented name and allows one that is already in the user's inputs", () => {
+    const original = "Summarize this feedback for our CFO under 60 words.";
+    expect(guardRevision(cfo, original, `${original} Address it to Margaret personally.`)).toMatch(/Margaret/);
+    expect(guardRevision(cfo, original, `${original} Address it to Dana.`)).toBeNull();
+  });
+
+  it("a revision that loses the audience is caught as drift", () => {
+    const original = "Summarize this customer feedback for our CFO in one plain paragraph under 60 words.";
+    expect(guardRevision(cfo, original, "Under 60 words.")).toMatch(/dropped too much/);
+  });
+
+  it("the X-ray says when one instruction carries several requirements", async () => {
+    const xray = await xrayTask(cfo, "Summarize this feedback. Mention the $1,200 refund cost and that a decision is needed by Friday and keep it under 60 words.", { runs: 1 });
+    expect(xray.ablations.some((a) => a.bundled.length >= 2)).toBe(true);
+  });
+});
+
+describe("unsupported exact text is a question, and the sample goal is readable offline", () => {
+  it("does not offer to add a string that exists only in the check", async () => {
+    const task = custom([{ kind: "includes", text: "LHopital" }], "", "A comprehensive plan to study for my calculus test");
+    const run = await runTask(task, "Give me a comprehensive study plan for calculus.");
+    expect(run.diagnoses[0].kind).toBe("possible_checker_mismatch");
+    expect(run.diagnoses[0].evidence).toMatch(/appears nowhere in your prompt, goal, or notes/);
+    expect(run.diagnoses[0].interpretation).toMatch(/cannot show that a topic was covered/);
+  });
+
+  it("a fact that is in the notes is still a plain missing instruction", async () => {
+    const task = custom([{ kind: "includes", text: "March 3" }], "Launch moves to March 3.", "An update");
+    const run = await runTask(task, "Write an update.");
+    expect(run.diagnoses[0].kind).toBe("missing_instruction");
+  });
+
+  it("reads required and forbidden text out of a plain sentence", () => {
+    const checks = extractMechanical('Under 70 words, one paragraph. It includes "March 3" and "checkout bug", and never mentions $40k.');
+    expect(checks).toEqual(
+      expect.arrayContaining([
+        { kind: "maxWords", value: 70 },
+        { kind: "singleParagraph" },
+        { kind: "includes", text: "March 3" },
+        { kind: "includes", text: "checkout bug" },
+        { kind: "excludes", text: "$40k" },
+      ]),
+    );
+    expect(extractMechanical('Never mention "the budget".')).toEqual([{ kind: "excludes", text: "budget" }]);
   });
 });

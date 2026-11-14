@@ -501,14 +501,14 @@ button.link {
   margin: 0 auto;
   min-height: min(100svh, 56rem);
   display: grid;
-  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
   gap: clamp(1.5rem, 4vw, 4rem);
   align-items: center;
   padding: 6.5rem 0 3rem;
 }
 
 .hero h1 {
-  font-size: clamp(2.6rem, 5.4vw, 4.6rem);
+  font-size: clamp(2.2rem, 4.1vw, 3.5rem);
   line-height: 0.98;
   letter-spacing: -0.045em;
   font-weight: 800;
@@ -544,7 +544,7 @@ button.link {
 
 .preview-grid {
   display: grid;
-  grid-template-columns: 0.7fr 1.3fr;
+  grid-template-columns: 1fr 1fr;
   gap: 1rem;
   margin-bottom: 1.1rem;
 }
@@ -556,7 +556,35 @@ button.link {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.preview-goal {
+  margin-bottom: 1rem;
+  font-size: 1rem;
+}
+
+.preview-answer {
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: #d8d6de;
+  margin-bottom: 0.7rem;
+}
+
+.preview-checks {
+  display: grid;
+  gap: 0.3rem;
+  margin-bottom: 0.9rem;
+  font-size: 0.9rem;
+}
+
+.preview-checks .gained {
+  color: var(--emerald);
+}
+
+.preview-checks .same {
+  color: var(--mute);
+}
+
 .preview-prompt {
+  margin-bottom: 0.8rem;
   font-family: var(--mono);
   font-size: 0.82rem;
   line-height: 1.6;
@@ -565,11 +593,9 @@ button.link {
 
 .preview-score,
 .side-score {
-  margin-top: 0.8rem;
-  font-size: 2rem;
-  font-weight: 800;
-  letter-spacing: -0.04em;
-  line-height: 1;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--mute);
 }
 
 .preview-score span,
@@ -733,30 +759,228 @@ button.link {
   color: #0a0a0d;
 }
 
-.bench-grid {
+/* Setup: two cards side by side. Results below use the full width. Nothing scrolls on its own. */
+.setup-grid {
   display: grid;
-  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 1.25rem;
   align-items: start;
 }
 
-.setup,
 .results {
   display: grid;
   gap: 1.25rem;
   min-width: 0;
+  margin-top: 1.25rem;
 }
 
-/* The setup column stays in view while results scroll, so there is no dead space beside long results. */
-@media (min-width: 901px) {
-  .setup {
-    position: sticky;
-    top: 4.6rem;
-    max-height: calc(100svh - 5.4rem);
-    overflow-y: auto;
-    padding-right: 0.3rem;
-    scrollbar-width: thin;
-  }
+.privacy {
+  margin-top: 0.8rem;
+}
+
+.goal {
+  font-size: 1.05rem;
+  line-height: 1.5;
+  margin-bottom: 0.9rem;
+}
+
+.brief {
+  margin: 0.9rem 0 0;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+.brief > summary {
+  font-weight: 600;
+}
+
+.brief .label {
+  margin-top: 0.9rem;
+}
+
+.goal-input {
+  min-height: 5.5rem;
+  margin: 0.6rem 0 0.7rem;
+}
+
+.proposal,
+.evaluation {
+  margin-top: 1rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--line);
+}
+
+.proposed {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+}
+
+.proposed li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 1rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-small);
+  font-size: 0.95rem;
+}
+
+.clarify {
+  margin-top: 0.7rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid rgba(47, 214, 240, 0.4);
+  border-radius: var(--radius-small);
+  background: rgba(47, 214, 240, 0.05);
+}
+
+.clarify p {
+  margin-bottom: 0.6rem;
+}
+
+.clarify .fine {
+  margin: 0.6rem 0 0;
+}
+
+.eval-list {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.93rem;
+  color: #cfcdd6;
+}
+
+.eval-list b {
+  color: var(--ink);
+}
+
+.chip.model {
+  color: #dccdff;
+  border-color: rgba(155, 107, 255, 0.6);
+}
+
+.chip.src-review {
+  color: #dccdff;
+  border-color: rgba(155, 107, 255, 0.6);
+}
+
+.chip.src-rule {
+  color: #b9f1fb;
+  border-color: rgba(47, 214, 240, 0.5);
+}
+
+.chip.src-setup {
+  color: #ffcf9e;
+  border-color: rgba(255, 159, 69, 0.55);
+}
+
+.review {
+  margin-top: 1.1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.review-status {
+  font-size: 0.97rem;
+  margin-bottom: 0.3rem;
+}
+
+.review-status.concerns b {
+  color: var(--orange);
+}
+
+.review-status.aligned b {
+  color: var(--emerald);
+}
+
+.unscored {
+  margin: 0 0 0.4rem;
+}
+
+.evidence {
+  margin: -0.5rem 0 1rem;
+}
+
+.fix-alt p {
+  width: 100%;
+  font-weight: 600;
+}
+
+.fix-list dl {
+  margin: 0.6rem 0 0;
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: 0.4rem 1rem;
+  font-size: 0.94rem;
+}
+
+.fix-list dt {
+  color: var(--mute);
+  font-size: 0.84rem;
+  padding-top: 0.1rem;
+}
+
+.fix-list dd {
+  margin: 0;
+}
+
+.quote {
+  display: block;
+  padding: 0.3rem 0.6rem;
+  border-left: 3px solid var(--line-strong);
+  color: #d8d6de;
+}
+
+.quote + .quote {
+  margin-top: 0.35rem;
+}
+
+.tabs {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  margin-bottom: 0.9rem;
+}
+
+.tabs button {
+  border: none;
+  background: none;
+  padding: 0.4rem 0.95rem;
+  border-radius: 999px;
+  color: var(--mute);
+  font-weight: 600;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.tabs button[aria-selected="true"] {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--ink);
+}
+
+.by-check {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.2rem 0 1.2rem;
+  font-size: 0.94rem;
+  color: #cfcdd6;
+}
+
+.by-check b {
+  color: var(--ink);
+}
+
+.math-block {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.3rem 0;
+}
+
+.md hr {
+  border: none;
+  border-top: 1px solid var(--line);
 }
 
 .panel {
@@ -1002,7 +1226,7 @@ button.icon:hover {
 
 .result-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
   gap: 1.4rem;
 }
 
@@ -1014,8 +1238,11 @@ button.icon:hover {
 }
 
 .answer-body {
-  max-height: 22rem;
-  overflow: auto;
+  max-height: 44rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  line-height: 1.65;
   padding: 0.8rem 0.95rem;
   background: #050507;
   border: 1px solid var(--line);
@@ -1024,7 +1251,14 @@ button.icon:hover {
   margin-bottom: 0.4rem;
 }
 
-.answer-body pre {
+.answer-body .md pre {
+  white-space: pre;
+  overflow-x: auto;
+  word-break: normal;
+  margin-top: 0.7em;
+}
+
+.answer-body > pre {
   margin: 0;
   border: none;
   padding: 0;
@@ -1199,7 +1433,9 @@ button.icon:hover {
   border-left-color: var(--emerald);
 }
 
-.helper-log li.blocked {
+.helper-log li.blocked,
+.helper-log li.tradeoff,
+.helper-log li.choice {
   border-left-color: var(--orange);
 }
 
@@ -1287,35 +1523,48 @@ button.icon:hover {
   margin: 0.9rem 0;
 }
 
-.prose span[class^="mark-"] {
+.prose .span {
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  display: inline;
+  background: none;
+  border: none;
+  border-bottom: 2px solid var(--line-strong);
   padding: 0.1em 0.15em;
   border-radius: 3px;
-  border-bottom: 2px solid transparent;
-  transition: background 0.4s var(--ease);
+  cursor: pointer;
+  transition: background 0.3s var(--ease);
 }
 
-.mark-helpful {
+.prose .span:hover,
+.prose .span.picked {
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
+}
+
+.prose .mark-helpful {
   background: rgba(61, 220, 151, 0.16);
-  border-bottom-color: var(--emerald) !important;
+  border-bottom-color: var(--emerald);
 }
 
-.mark-no_measured_effect {
+.prose .mark-no_measured_effect {
   color: var(--mute);
 }
 
-.mark-possibly_harmful,
-.mark-tradeoff {
+.prose .mark-possibly_harmful,
+.prose .mark-tradeoff {
   background: rgba(255, 159, 69, 0.14);
-  border-bottom-color: var(--orange) !important;
+  border-bottom-color: var(--orange);
 }
 
-.mark-uncertain {
+.prose .mark-uncertain {
   background: rgba(155, 107, 255, 0.16);
-  border-bottom: 2px dotted var(--violet) !important;
+  border-bottom-color: var(--violet);
 }
 
-.mark-not_tested {
-  border-bottom: 2px dashed var(--dim) !important;
+.prose .mark-not_tested {
+  color: var(--dim);
 }
 
 .readout {
@@ -1479,10 +1728,19 @@ button.icon:hover {
 
   .preview-grid,
   .steps ol,
-  .bench-grid,
+  .setup-grid,
   .result-grid,
   .compare-grid {
     grid-template-columns: 1fr;
+  }
+
+  .fix-list dl {
+    grid-template-columns: 1fr;
+    gap: 0.1rem;
+  }
+
+  .fix-list dd {
+    margin-bottom: 0.5rem;
   }
 
   .check-table td {

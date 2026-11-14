@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "@fontsource-variable/bricolage-grotesque";
 import "@fontsource-variable/geist-mono";
+import "katex/dist/katex.min.css";
 import { APP_NAME, TAGLINE } from "@/lib/brand";
 import "./globals.css";
 

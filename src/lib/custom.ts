@@ -9,6 +9,7 @@ import type { CheckSpec, CustomCheck, CustomCheckKind, CustomTaskInput, Task } f
 export const MAX_CUSTOM_CHECKS = 8;
 export const MAX_MATERIAL_CHARS = 6000;
 export const MAX_CHECK_TEXT = 120;
+export const MAX_GOAL_CHARS = 600;
 
 const KINDS: CustomCheckKind[] = [
   "maxWords",
@@ -33,8 +34,11 @@ function escapeRegex(text: string): string {
 export function cleanCheck(raw: unknown): CustomCheck | null {
   if (!raw || typeof raw !== "object") return null;
   const { kind, text, value } = raw as { kind?: unknown; text?: unknown; value?: unknown };
-  if (typeof kind !== "string" || !KINDS.includes(kind as CustomCheckKind)) return null;
-  const k = kind as CustomCheckKind;
+  if (typeof kind !== "string") return null;
+  // Models often return a near miss such as "max_words" or "MaxWords". Accept those spellings of a supported kind.
+  const wanted = kind.toLowerCase().replace(/[^a-z]/g, "");
+  const k = KINDS.find((name) => name.toLowerCase() === wanted);
+  if (!k) return null;
   if (NEEDS_TEXT.includes(k)) {
     if (typeof text !== "string") return null;
     const t = text.trim().replace(/\s+/g, " ");
@@ -198,11 +202,14 @@ export function findContradiction(checks: CustomCheck[]): string | null {
 
 export function buildCustomTask(input: unknown): { task: Task } | { error: string } {
   if (!input || typeof input !== "object") return { error: "Add at least one requirement for your own prompt." };
-  const { material, checks } = input as Partial<CustomTaskInput>;
+  const { material, checks: rawChecks, goal: rawGoal } = input as Partial<CustomTaskInput>;
   const text = typeof material === "string" ? material : "";
   if (text.length > MAX_MATERIAL_CHARS) return { error: `Keep the material under ${MAX_MATERIAL_CHARS} characters.` };
-  if (!Array.isArray(checks) || checks.length === 0) {
-    return { error: "Add at least one requirement, so there is something objective to measure." };
+  const goal = typeof rawGoal === "string" ? rawGoal.trim().slice(0, MAX_GOAL_CHARS) : "";
+  const checks = Array.isArray(rawChecks) ? rawChecks : [];
+  // With a goal and no checks the answer is unscored: there is a goal review, and no invented score.
+  if (checks.length === 0 && goal.length === 0) {
+    return { error: "Say what you want from the answer, or add at least one check, so there is something to evaluate against." };
   }
   if (checks.length > MAX_CUSTOM_CHECKS) return { error: `Use at most ${MAX_CUSTOM_CHECKS} requirements.` };
   const cleaned = checks.map(cleanCheck);
@@ -215,6 +222,7 @@ export function buildCustomTask(input: unknown): { task: Task } | { error: strin
       title: "Your own prompt",
       blurb: "Debug a prompt you actually use.",
       situationCard: [],
+      goal,
       sourceMaterial: text.trim(),
       checks: (cleaned as CustomCheck[]).map(toSpec),
     },
@@ -231,46 +239,18 @@ export function resolveTask(taskId: unknown, custom: unknown): { task: Task } | 
   return task ? { task } : { error: "Unknown task.", status: 404 };
 }
 
-/** Pulls a list of checks out of a model's JSON reply. Anything invalid is dropped. */
-export function parseSuggestedChecks(reply: string): CustomCheck[] {
-  const start = reply.indexOf("{");
-  const end = reply.lastIndexOf("}");
-  if (start === -1 || end <= start) return [];
-  try {
-    const data = JSON.parse(reply.slice(start, end + 1)) as { checks?: unknown };
-    if (!Array.isArray(data.checks)) return [];
-    return data.checks
-      .map(cleanCheck)
-      .filter((c): c is CustomCheck => c !== null)
-      .slice(0, 6);
-  } catch {
-    return [];
+/**
+ * Tension between what the user asked for and a check they set.
+ * Returned as a plain-language note with a choice for the user. Nothing is changed automatically.
+ */
+export function findTensions(goal: string, prompt: string, checks: CustomCheck[]): string[] {
+  const notes: string[] = [];
+  const wantsDepth = `${goal} ${prompt}`.match(/\b(comprehensive|detailed|thorough|in[- ]depth|complete|full|step[- ]by[- ]step|with examples)\b/i);
+  const limit = checks.find((c) => c.kind === "maxWords");
+  if (wantsDepth && limit && (limit.value ?? 0) <= 150) {
+    notes.push(
+      `You asked for something "${wantsDepth[0].toLowerCase()}" and also set a ${limit.value} word limit. A limit that short may force a compact outline instead of a fuller answer. Keep the limit if an outline is what you want, or raise or remove it.`,
+    );
   }
-}
-
-export const SUGGEST_INSTRUCTIONS = [
-  "Convert the description of a good answer below into objective checks that a simple rule can verify.",
-  'Reply with JSON only, in this shape: {"checks":[{"kind":"...","text":"...","value":0}]}',
-  "Allowed kinds:",
-  '- "maxWords": value is the word limit',
-  '- "includes": text is a short exact phrase or number that must appear',
-  '- "excludes": text is a short exact phrase that must not appear',
-  '- "startsWith": text is what the answer must begin with',
-  '- "singleParagraph": one paragraph with no bullets (no text or value)',
-  '- "numberedItems": value is the exact number of numbered list items',
-  '- "listOnly": a numbered list with no intro or closing line (no text or value)',
-  "Rules: at most 6 checks. Use only requirements stated in the description. Keep text under 60 characters and literal.",
-  "Skip anything subjective such as tone or quality. If nothing can be checked, return an empty list.",
-].join("\n");
-
-/** Offline stand-in for the suggestion model, used only in mock mode. */
-export function mockSuggest(goal: string): CustomCheck[] {
-  const found: CustomCheck[] = [];
-  const words = goal.match(/(\d{1,4})\s*-?\s*words?/i);
-  if (words) found.push({ kind: "maxWords", value: Number(words[1]) });
-  for (const quoted of goal.matchAll(/"([^"]{1,60})"/g)) found.push({ kind: "includes", text: quoted[1] });
-  if (/paragraph|no bullets?/i.test(goal)) found.push({ kind: "singleParagraph" });
-  const items = goal.match(/(\d{1,2})\s+(numbered\s+)?(items|points|steps)/i);
-  if (items) found.push({ kind: "numberedItems", value: Number(items[1]) });
-  return found.map(cleanCheck).filter((c): c is CustomCheck => c !== null).slice(0, 6);
+  return notes;
 }

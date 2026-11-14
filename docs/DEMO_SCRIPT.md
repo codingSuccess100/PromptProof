@@ -1,46 +1,47 @@
-# Demo script (about 2 minutes 45 seconds)
+# Demo script (about 2 minutes 50 seconds)
 
 Roles: one person talks, one person drives. Do not switch mid-demo.
 Before you start: open `/workspace`, click "Clear session", and have the backup recording in a second tab.
-Nothing here is scripted to fail. Say what actually appears on screen.
+Nothing here is scripted to fail or to succeed. Say what actually appears on screen.
 
 ## 0:00 to 0:20  The problem
 
-"You ask an AI for something, the answer is off, and you rewrite the prompt by guesswork. You never find out which change helped. PromptProof makes that a test instead of a guess."
+"You ask an AI for something, the answer is off, and you rewrite the prompt by guesswork. You never find out what the problem was or whether your change helped. PromptProof turns a rough prompt into a tested one."
 
-## 0:20 to 0:55  A real goal and a first answer
+## 0:20 to 1:05  A perfect score that is wrong
 
-Click "Use my own prompt", then "Fill in a sample". Point at the three fields.
+Stay on "Try an example". Read the goal aloud: a summary of customer feedback for the CFO.
 
-"This is my prompt. This is the notes it works from. And this is what a good answer must do: under 70 words, name the new date and the reason, and never mention the budget. I chose these checks, so I know what the result means."
+Paste: `Write to our billing vendor asking them to refund the $1,200 from last month by Friday. Lead with the billing errors. One plain paragraph, no bullet points, under 60 words.` Click Run.
 
-Click Run.
+"Every rule-based check passes. Word limit, the refund figure, the deadline. And the answer is wrong: it is a message to the vendor, and the goal was a summary for the CFO. This is why a checklist is not enough."
 
-"The answer, next to the requirements it met and missed, with the evidence for each."
+Point at the goal review.
 
-## 0:55 to 1:35  A finding and a targeted edit
+"A separate goal review, clearly labeled as model-assisted, flags a possible task mismatch and quotes the words in my prompt that caused it. It does not change the check results. It sits next to them."
 
-Point at "What to fix".
+## 1:05 to 1:45  A specific revision, tested
 
-"It does not just say 'be more specific'. This requirement was missed because the prompt never asked for it. Here is the exact edit to try, and it is marked as untested."
+Click "Replace my opening sentence", then "Test revision".
 
-Click "Add to draft" on one or two items, then "Test this revision".
+"It did not rewrite my prompt for me. It proposed one edit, marked it untested, and I applied it. Now the comparison: same goal, same checks. Prompt changes here, answer changes here."
 
-## 1:35 to 2:10  A valid comparison
+If checks regressed, say so: "Two checks regressed because that sentence carried the refund figure and the deadline. It tells me exactly which, with the edit to restore each. No improvement, or a trade, is a legitimate result."
 
-"Same task, same requirements, same model settings. Both prompts with the change highlighted, both answers, and which requirements improved, stayed the same, or regressed. If I change the requirements, it starts a new experiment instead of pretending the scores are comparable."
+## 1:45 to 2:25  Your own prompt, without building a rubric
 
-If a requirement did not improve, say so: "That one did not move. No improvement is a legitimate result."
+Click "Use my own prompt". Type a prompt and a goal such as `A comprehensive study plan for my calculus midterm`. Click "Review proposed evaluation".
 
-## 2:10 to 2:35  The X-ray, or the helper (pick one)
+"I did not have to become an evaluation engineer. 'Comprehensive' cannot be checked by a rule, so it asks me what I mean, and offers options. If I add a word limit, it proposes that as a check and leaves the rest to the goal review. Nothing is used until I accept it. If I accept nothing, the answer is simply unscored. It does not invent a number."
 
-X-ray: click "Run the X-ray". "It removes each instruction in turn and reruns three times. This one changed a check every time. This persona changed none of the checks I selected, which is not the same as useless."
+## 2:25 to 2:50  Honesty and close
 
-Or helper: click "Improve and test". "It tries one edit at a time, keeps it only if something improves and nothing regresses, shows the rejected attempts, and stops after three."
+"Rule-based checks are repeatable, not complete. The goal review can be wrong and says so. Comparisons only happen under identical criteria. We adapted ablation analysis and evaluation practice into something a non-engineer can use. PromptProof."
 
-## 2:35 to 2:45  Close
+## Optional, if asked
 
-"We adapted ablation analysis into an interactive learning and debugging experience. It counts requirements met, not answer quality, and it says so. PromptProof."
+- X-ray: "It removes each instruction in turn and reruns, and reports per check what changed. A diagnostic, not a list of deletions."
+- Improve and test: "Up to three single edits. It keeps one only if a check improves, none regresses, and the review sees no drift. It will not force an odd exact phrase into my prompt to pass a check. It stops and asks."
 
 ## If something breaks
 
@@ -50,12 +51,12 @@ Or helper: click "Improve and test". "It tries one edit at a time, keeps it only
 
 ## Likely judge questions
 
-- "Is the score objective?" The checks are fixed rules, so they are repeatable. That does not make them complete or correct. It counts requirements met.
-- "Does the keyword check prove the answer is right?" No. An exact-text check shows the text appears. The app says that next to the check.
-- "Why did an instruction show no change?" None of the selected checks moved in three runs. It may matter for things they do not measure.
-- "Could the helper game the checks?" It cannot change them, an edit that drops most of the prompt or adds a number I did not supply is blocked, and every attempt is shown. A higher count is evidence, not proof.
-- "Does this exist already?" Developer tools for prompt ablation and evaluation exist. This is built for people who are not prompt engineers.
+- "Isn't the goal review just another AI opinion?" Yes, and it is labeled that way. It is kept apart from the rule-based checks, its quotes are verified against the actual text, and it never changes a score.
+- "Does an exact-text check prove the answer is right?" No. It shows the text appears. The app says that next to the check, and asks before treating an odd spelling as required.
+- "Could the helper game the checks?" It cannot change them. It blocks edits that drop most of the prompt or add a number, date, or name I did not supply, and it shows every rejected attempt.
+- "Is three runs enough?" It is three observations. The app reports counts, not confidence.
+- "Does this exist already?" Prompt evaluation and ablation tools exist for developers. This is built for people who are not prompt engineers.
 
 ## User testing protocol
 
-Ask someone to complete one task with no explanation. Note: where they hesitate, whether the suggested edit helped, and whether they can say in their own words what the comparison showed. Record the number of people and what happened. Do not round up.
+Ask someone to complete one task with no explanation. Note where they hesitate, whether "Review proposed evaluation" made sense, whether the suggested edit helped, and whether they can say in their own words what the comparison showed. Record the number of people and what happened. Do not round up.
