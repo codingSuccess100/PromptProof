@@ -21,18 +21,19 @@ Without a key the app runs on a built-in offline mock model and says so in the h
 | `npm run dev` | Local development server |
 | `npm run build` | Production build (also type checks) |
 | `npm test` | 27 unit tests for checks, segmentation, friction rules, ghost suggestions, X-ray |
-| `npm run report` | One benchmark: model check, latency, weak against strong prompt, X-ray repeatability. Writes `promptproof-report.md` with no secrets. Run this first with a real key. |
+| `npm run report` | One benchmark: model check, latency, weak against strong prompt, X-ray repeatability. Writes `promptproof-report.md` with no secrets. Stops with an error if no key is set. |
+| `npm run report:mock` | Same report against the offline mock, only to see its shape |
 | `npm run check` | Tests, then production build |
 
 ## Environment variables
 
 | Name | Default | Purpose |
 | --- | --- | --- |
-| `GEMINI_API_KEY` | none | Server only. Never prefix with `NEXT_PUBLIC_`. |
-| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | `npm run report` verifies it and suggests a working model if it fails. |
+| `OPENAI_API_KEY` | none | Server only. Never prefix with `NEXT_PUBLIC_`. |
+| `OPENAI_MODEL` | `gpt-6-luna` | `npm run report` verifies it and suggests a working model if it fails. |
 | `MAX_PARALLEL` | 5 | Concurrent model calls during an X-ray |
 | `XRAY_RUNS` | 1 | Runs per removed part (1 to 3). More runs, more stable labels, more latency. |
-| `GEMINI_THINKING_BUDGET` | unset | Optional. Set to 0 to cut latency on models that support it. |
+| `OPENAI_REASONING_EFFORT` | `none` | Reasoning is off by default for speed and repeatable answers. |
 
 ## How it works
 

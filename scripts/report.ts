@@ -1,17 +1,18 @@
 // One command, one shareable report:  npm run report
 //
-// 1. Checks the configured Gemini model works (and suggests a working one if not).
+// 1. Checks the configured OpenAI model works (and suggests a working one if not).
 // 2. Latency: 1 call, then 5 and 8 in parallel.
 // 3. Task 1 with a weak prompt and a strong prompt, three runs each.
 // 4. X-ray on a reference prompt, three times, to see how often the labels repeat.
 //
 // Writes promptproof-report.md. The API key is never written to the report.
-// With no key it runs against the offline mock so you can see the report shape.
+// With no key it stops with an error. `npm run report:mock` runs the offline mock instead,
+// only to show the report shape.
 // A full run makes about 50 small model calls.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { runTask, xrayTask } from "../src/lib/engine";
-import { DEFAULT_MODEL, buildModelInput } from "../src/lib/model";
+import { FALLBACK_MODELS, buildModelInput, configuredModel, droppedSettings, rawCall } from "../src/lib/model";
 import { getTask } from "../src/lib/tasks";
 import type { RunResult, XrayResult } from "../src/lib/types";
 
@@ -37,8 +38,29 @@ if (existsSync(".env.local")) {
   }
 }
 
-const key = process.env.GEMINI_API_KEY ?? "";
-const mock = key.length === 0;
+const key = (process.env.OPENAI_API_KEY ?? "").trim();
+const mock = process.argv.includes("--mock");
+if (mock) {
+  delete process.env.OPENAI_API_KEY;
+} else if (!key) {
+  console.error(
+    [
+      "",
+      "STOPPED: no OPENAI_API_KEY found, so this would only test the offline mock.",
+      "",
+      "Create a file named .env.local next to package.json with this one line:",
+      "",
+      "  OPENAI_API_KEY=paste_your_key_here",
+      "",
+      "Then run:  npm run report",
+      "(To see the report shape without a key:  npm run report:mock)",
+      "",
+    ].join("\n"),
+  );
+  process.exit(1);
+} else {
+  process.env.OPENAI_API_KEY = key;
+}
 const task = getTask("cfo-summary");
 if (!task) throw new Error("Task 1 is missing.");
 
@@ -56,73 +78,25 @@ function save() {
   // Belt and braces: strip the key if it somehow ended up in any text.
   let text = lines.join("\n") + "\n";
   if (key) text = text.split(key).join("[REDACTED]");
+  text = text.replace(/sk-[A-Za-z0-9_\-]{8,}/g, "[REDACTED]");
   writeFileSync(REPORT_PATH, text);
 }
 
-// ---------- raw calls (so we can see HTTP statuses) ----------
+// ---------- model check ----------
 
-interface RawResult {
-  ms: number;
-  status: number;
-  empty: boolean;
-  note: string;
-}
+const input = () => buildModelInput(task!, XRAY_PROMPT);
 
-async function rawCall(model: string): Promise<RawResult> {
-  const started = Date.now();
-  try {
-    const res = await fetch(`${API}/models/${encodeURIComponent(model)}:generateContent`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: buildModelInput(task!, XRAY_PROMPT) }] }],
-        generationConfig: { temperature: 0, maxOutputTokens: 2048 },
-      }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    const body = (await res.json().catch(() => ({}))) as {
-      candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[];
-      error?: { message?: string };
-    };
-    const text = (body.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("");
-    const note = res.ok ? (body.candidates?.[0]?.finishReason ?? "") : (body.error?.message ?? "").slice(0, 160);
-    return { ms: Date.now() - started, status: res.status, empty: res.ok && text.trim() === "", note };
-  } catch (err) {
-    return { ms: Date.now() - started, status: 0, empty: false, note: err instanceof Error ? err.name : "error" };
-  }
-}
-
-async function listModels(): Promise<string[]> {
-  try {
-    const res = await fetch(`${API}/models?pageSize=200`, { headers: { "x-goog-api-key": key } });
-    const body = (await res.json()) as { models?: { name: string; supportedGenerationMethods?: string[] }[] };
-    return (body.models ?? [])
-      .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
-      .map((m) => m.name.replace(/^models\//, ""));
-  } catch {
-    return [];
-  }
-}
-
-/** Finds a model that answers. Tries the configured one first, then fast text models from the account's list. */
+/** Finds a model that answers. Tries the configured one first, then other low-cost models. */
 async function pickModel(): Promise<string | null> {
-  const configured = process.env.GEMINI_MODEL || DEFAULT_MODEL;
-  const first = await rawCall(configured);
-  out(`| ${configured} (configured) | ${first.status} | ${first.ms} | ${cell(first.note)} |`);
-  if (first.status === 200 && !first.empty) return configured;
-  if (first.status === 400 || first.status === 401 || first.status === 403) {
-    if (/key/i.test(first.note)) return null; // bad key: no point trying other models
-  }
-  const available = await listModels();
-  const candidates = available
-    .filter((m) => /flash/.test(m) && !/image|tts|audio|live|embed|omni|transcribe|robotics/.test(m))
-    .sort((a, b) => Number(/lite/.test(b)) - Number(/lite/.test(a)) || b.localeCompare(a))
-    .filter((m) => m !== configured)
-    .slice(0, 5);
+  const configured = configuredModel();
+  const candidates = [configured, ...FALLBACK_MODELS.filter((m) => m !== configured)];
   for (const model of candidates) {
-    const result = await rawCall(model);
-    out(`| ${model} | ${result.status} | ${result.ms} | ${cell(result.note)} |`);
-    if (result.status === 200 && !result.empty) return model;
+    const result = await rawCall(input(), key, model);
+    const good = result.status === 200 && result.text !== "";
+    out(`| ${model}${model === configured ? " (configured)" : ""} | ${result.status} | ${result.ms} | ${cell(good ? "ok" : result.note)} |`);
+    if (good) return model;
+    // A rejected key or an empty balance fails the same way on every model.
+    if (result.status === 401 || result.note.includes("no credit")) return null;
   }
   return null;
 }
@@ -138,15 +112,15 @@ async function latencySection(model: string): Promise<boolean> {
   const batches: { n: number; ok: boolean; wall: number }[] = [];
   for (const n of [1, 5, 8, 8]) {
     const started = Date.now();
-    const results = await Promise.all(Array.from({ length: n }, () => rawCall(model)));
+    const results = await Promise.all(Array.from({ length: n }, () => rawCall(input(), key, model)));
     const wall = Date.now() - started;
-    const good = results.filter((r) => r.status === 200 && !r.empty).length;
+    const good = results.filter((r) => r.status === 200 && r.text !== "").length;
     const statuses = [...new Set(results.map((r) => r.status))].join(", ");
     if (results.some((r) => r.status === 429)) sawLimit = true;
     batches.push({ n, ok: good === n, wall });
     out(
       `| ${n} parallel | ${wall} | ${Math.max(...results.map((r) => r.ms))} | ${good}/${n} | ` +
-        `${results.filter((r) => r.empty).length} | ${statuses} |`,
+        `${results.filter((r) => r.status === 200 && r.text === "").length} | ${statuses} |`,
     );
   }
   out();
@@ -155,7 +129,7 @@ async function latencySection(model: string): Promise<boolean> {
   const fiveOk = batches.find((b) => b.n === 5)?.ok ?? false;
   const recommended = eightOk ? 8 : fiveOk ? 5 : 2;
   out(`Recommended setting: \`MAX_PARALLEL=${recommended}\``);
-  if (sawLimit) out("Rate limit responses (429) were seen. The free tier is too small for the X-ray. See the handoff notes about billing.");
+  if (sawLimit) out("Rate limit responses (429) were seen. Lower MAX_PARALLEL or raise the usage tier of the OpenAI account.");
   out();
   verdicts.push({
     name: "8 parallel calls succeed",
@@ -285,17 +259,13 @@ async function main() {
   out("# PromptProof benchmark report");
   out();
   out(`- Generated: ${new Date().toISOString()}`);
-  out(`- Mode: ${mock ? "OFFLINE MOCK (no API key found). These numbers say nothing about a real model." : "Gemini API"}`);
+  out(`- Mode: ${mock ? "OFFLINE MOCK (requested with --mock). These numbers say nothing about a real model." : "OpenAI API"}`);
   out(`- Node: ${process.version}`);
   out(`- API key: ${mock ? "not set" : "set (never written to this file)"}`);
   out();
 
   if (mock) {
-    out("To run against Gemini, create `.env.local` in the project folder with one line:");
-    out();
-    out("```");
-    out("GEMINI_API_KEY=paste_your_key_here");
-    out("```");
+    out("This is the offline mock. Run `npm run report` with a key for real results.");
     out();
   } else {
     out("## 1. Model check");
@@ -305,16 +275,18 @@ async function main() {
     const model = await pickModel();
     out();
     if (!model) {
-      out("No working model found. Check that the key is valid and that the Gemini API is enabled for it.");
+      out("No working model found. See the Note column: fix the key, add billing credit, or set OPENAI_MODEL to a model your account can use.");
       verdicts.push({ name: "A model answers", pass: false, note: "see section 1" });
       return;
     }
-    if (model !== (process.env.GEMINI_MODEL || DEFAULT_MODEL)) {
-      out(`The configured model did not work. Add this line to \`.env.local\`: \`GEMINI_MODEL=${model}\``);
+    if (model !== configuredModel()) {
+      out(`The configured model did not work. Add this line to \`.env.local\`: \`OPENAI_MODEL=${model}\``);
       out();
     }
-    process.env.GEMINI_MODEL = model;
+    process.env.OPENAI_MODEL = model;
     out(`Using model: \`${model}\``);
+    const dropped = droppedSettings(model);
+    if (dropped.length) out(`This model rejected these settings, so they were left out: ${dropped.join(", ")}. Answers may vary more between runs.`);
     out();
     const limited = await latencySection(model);
     if (limited) {

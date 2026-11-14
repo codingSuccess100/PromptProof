@@ -25,7 +25,7 @@ It also flags risky wording patterns such as personas, leading assumptions, and 
 ## How we built it
 
 - Next.js, React, and TypeScript, deployed on Vercel.
-- Gemini API, called only from the server.
+- OpenAI API, called only from the server.
 - A rule-based engine: prompt segmentation, leave-one-out ablation with parallel model calls, deterministic scoring, and pattern warnings.
 - No database. Prompts are not stored.
 - 27 unit tests, plus an offline mock model so the whole pipeline can be tested without a key.
@@ -61,7 +61,7 @@ Leave-one-out ablation is an established research method, and developer tools fo
 
 ## Built with
 
-nextjs, react, typescript, gemini, vercel, vitest
+nextjs, react, typescript, openai, vercel, vitest
 
 ## Links
 
@@ -72,4 +72,4 @@ nextjs, react, typescript, gemini, vercel, vitest
 ## Prize categories
 
 - One [HACKUMASS] category: Most Impactful AI Hack.
-- Sponsor prize: Best Use of Gemini API.
+- Sponsor prizes: none by default. The app no longer uses Gemini, so do not enter Best Use of Gemini API.

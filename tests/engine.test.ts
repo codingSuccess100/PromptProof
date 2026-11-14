@@ -7,7 +7,7 @@ import { TASKS, getTask, toPublicTask } from "@/lib/tasks";
 
 // These tests run against the offline mock model, so they need no key and no network.
 beforeAll(() => {
-  delete process.env.GEMINI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
 });
 
 const cfo = getTask("cfo-summary")!;

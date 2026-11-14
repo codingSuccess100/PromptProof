@@ -23,8 +23,8 @@ git push -u origin main
 
 1. Go to https://vercel.com/new and import the repo. Leave every build setting on its default.
 2. Under Environment Variables add:
-   - `GEMINI_API_KEY` = your key
-   - `GEMINI_MODEL` = the model named in your report (default `gemini-3.5-flash-lite`)
+   - `OPENAI_API_KEY` = your key
+   - `OPENAI_MODEL` = the model named in your report (default `gpt-6-luna`)
    - `MAX_PARALLEL` = the value recommended in your report
 3. Click Deploy.
 
@@ -32,7 +32,7 @@ Command-line alternative:
 
 ```
 npx vercel
-npx vercel env add GEMINI_API_KEY production
+npx vercel env add OPENAI_API_KEY production
 npx vercel --prod
 ```
 
@@ -46,6 +46,7 @@ If the X-ray fails only on the deployed site, the usual cause is the function ti
 
 ## 4. Protect the key
 
-- In Google AI Studio or Google Cloud, set a budget or spending cap on the project.
+- At https://platform.openai.com/settings/organization/limits set a low monthly budget.
+- Create the key as a project key so it can be revoked without touching anything else.
 - The API routes limit each device to 30 runs and 12 X-rays per 10 minutes. This is best effort.
 - After judging, delete the key.

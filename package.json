@@ -8,7 +8,8 @@
     "start": "next start",
     "test": "vitest run",
     "report": "tsx scripts/report.ts",
-    "check": "vitest run && next build"
+    "check": "vitest run && next build",
+    "report:mock": "tsx scripts/report.ts --mock"
   },
   "dependencies": {
     "next": "^15.1.0",
