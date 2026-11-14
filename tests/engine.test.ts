@@ -201,3 +201,65 @@ describe("X-ray ablation (mock model)", () => {
     expect(labelAblation([5, 4, 5], [4, 5, 4])).toBe("uncertain");
   });
 });
+
+import { buildCustomTask, cleanCheck, mockSuggest, parseSuggestedChecks, resolveTask } from "@/lib/custom";
+
+describe("own-prompt mode", () => {
+  const input = {
+    material: "Notes: the launch moved to March 3. Budget is $40k.",
+    checks: [
+      { kind: "maxWords", value: 50 },
+      { kind: "includes", text: "March 3" },
+      { kind: "excludes", text: "budget" },
+      { kind: "startsWith", text: "Update:" },
+      { kind: "singleParagraph" },
+    ],
+  };
+
+  it("builds rule-based checks and escapes user text", () => {
+    const built = buildCustomTask({ material: "", checks: [{ kind: "includes", text: "$1,200 (net)" }] });
+    expect("task" in built).toBe(true);
+    if ("task" in built) {
+      const spec = built.task.checks[0];
+      expect(runCheck(spec, "Total was $1,200 (net) last month.").pass).toBe(true);
+      expect(runCheck(spec, "Total was 1200 net.").pass).toBe(false);
+    }
+  });
+
+  it("rejects empty, oversized, and malformed input", () => {
+    expect("error" in buildCustomTask({ material: "", checks: [] })).toBe(true);
+    expect("error" in buildCustomTask({ material: "x".repeat(7000), checks: [{ kind: "singleParagraph" }] })).toBe(true);
+    expect("error" in buildCustomTask({ material: "", checks: [{ kind: "includes", text: "" }] })).toBe(true);
+    expect(cleanCheck({ kind: "regex", text: ".*" })).toBeNull();
+    expect(cleanCheck({ kind: "maxWords", value: -3 })).toBeNull();
+    expect("error" in resolveTask("custom", undefined)).toBe(true);
+    expect("error" in resolveTask("nope", undefined)).toBe(true);
+  });
+
+  it("a vague prompt fails and a specific prompt passes on the mock", async () => {
+    const built = buildCustomTask(input);
+    if (!("task" in built)) throw new Error("task did not build");
+    const weak = await runTask(built.task, "Write an update.");
+    expect(weak.score).toBeLessThanOrEqual(2);
+    expect(weak.ghosts.length).toBeGreaterThan(0);
+    const strong = await runTask(
+      built.task,
+      'Write an update. Use 50 words or fewer. Include "March 3". Do not mention "budget". Start with "Update:". Write one plain paragraph with no bullet points.',
+    );
+    expect(strong.score).toBe(5);
+    const xray = await xrayTask(built.task, strong.prompt, { runs: 3 });
+    expect(xray.runsPerChunk).toBe(3);
+    expect(xray.ablations.some((a) => a.label === "helpful")).toBe(true);
+    expect(xray.ablations.find((a) => /Write an update/.test(a.text))?.label).toBe("no_measured_effect");
+  });
+
+  it("parses suggested checks and drops invalid ones", () => {
+    const reply = 'Sure: {"checks":[{"kind":"maxWords","value":80},{"kind":"includes","text":"Friday"},{"kind":"vibes"}]}';
+    expect(parseSuggestedChecks(reply)).toEqual([
+      { kind: "maxWords", value: 80 },
+      { kind: "includes", text: "Friday" },
+    ]);
+    expect(parseSuggestedChecks("no json here")).toEqual([]);
+    expect(mockSuggest('Under 80 words and must say "Friday"').length).toBe(2);
+  });
+});

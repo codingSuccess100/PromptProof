@@ -12,15 +12,17 @@ We all write prompts every day, and none of us could say which words in them act
 
 ## What it does
 
-PromptProof gives you a realistic task and a situation card with facts only you can see. You write a prompt. Then it:
+You write a prompt, and PromptProof:
 
-1. Runs your prompt and shows the AI answer.
-2. Scores the answer against five fixed, rule-based requirements. No AI judges the score.
-3. X-rays your prompt: it removes one part at a time, reruns the task, and shows which parts helped, which had no measured effect, and which may have hurt.
-4. Shows the details you left out as faded suggestions you can click to add.
-5. Lets you rerun and see your score before and after.
+1. Runs it and shows the AI answer.
+2. Scores the answer against fixed, rule-based requirements. No AI judges the score.
+3. X-rays your prompt: it removes one part at a time, reruns the task, and shows which parts helped, which had no measured effect, and which may have hurt. Each label is confirmed across three runs.
+4. Shows the details you left out as ghost text you can click to add.
+5. Shows before and after side by side when you rerun.
 
-It also flags risky wording patterns such as personas, leading assumptions, and conflicting instructions. These are clearly labeled as warnings, separate from measured effects.
+There are two modes. Practice scenarios give you a realistic task with facts only you can see. Your own prompt lets you paste a prompt you actually use and state what a good answer must do, as rules you choose. The model can suggest those rules from a one-line description, and you approve them.
+
+It also flags risky wording patterns such as personas, leading assumptions, and conflicting instructions. These are labeled as warnings, separate from measured effects.
 
 ## How we built it
 
@@ -28,7 +30,8 @@ It also flags risky wording patterns such as personas, leading assumptions, and 
 - OpenAI API, called only from the server.
 - A rule-based engine: prompt segmentation, leave-one-out ablation with parallel model calls, deterministic scoring, and pattern warnings.
 - No database. Prompts are not stored.
-- 27 unit tests, plus an offline mock model so the whole pipeline can be tested without a key.
+- 31 unit tests, plus an offline mock model so the whole pipeline can be tested without a key.
+- A canvas-drawn spectral wave background and scroll-driven walkthrough, built without an animation library, with reduced-motion and mobile versions.
 
 ## Challenges we ran into
 
@@ -51,8 +54,8 @@ It also flags risky wording patterns such as personas, leading assumptions, and 
 
 ## What's next
 
-- Bring your own task: paste a real prompt and define your own checks.
-- Three runs per part by default, with confidence shown.
+- Measuring pairs of instructions together, since removing one at a time misses overlaps.
+- Running the same X-ray across several models to show where a phrase matters.
 - More tasks across writing, data, and code.
 
 ## Prior work

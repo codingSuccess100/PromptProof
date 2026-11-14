@@ -89,8 +89,47 @@ function actionItems(task: Task, prompt: string): string {
   );
 }
 
+const FILLER =
+  "There are several angles worth covering here, and each one deserves a little context so the full picture is clear. " +
+  "First, the background matters, because it explains how the situation came about. Second, the details matter, because " +
+  "they shape what a reasonable next step looks like. Third, it helps to consider what could change over time. " +
+  "Taken together, these points give a rounded view, and I am happy to expand on any of them if that would be useful.";
+
+/** Literal-minded mock for a user's own task: it does what the prompt asks and nothing more. */
+function customTask(task: Task, prompt: string): string {
+  const said = (spec: Task["checks"][number]) => promptMentions(spec.promptCue, prompt);
+  const quoted = (spec: Task["checks"][number]) => spec.label.match(/"(.*)"/)?.[1] ?? "";
+  let opening = "";
+  const sentences: string[] = ["Here is a response to your request."];
+  let limit = 0;
+  let numbered = 0;
+  let listOnly = false;
+  let paragraph = false;
+  for (const spec of task.checks) {
+    if (spec.kind === "maxWords" && said(spec)) limit = spec.value ?? 0;
+    if (spec.kind === "matches" && said(spec)) sentences.push(`This covers ${quoted(spec)}.`);
+    if (spec.kind === "notMatches" && !said(spec)) sentences.push(`It also touches on ${quoted(spec)}.`);
+    if (spec.kind === "startsWith" && said(spec)) opening = quoted(spec);
+    if (spec.kind === "numberedItemsExactly" && said(spec)) numbered = spec.value ?? 0;
+    if (spec.kind === "onlyNumberedLines" && said(spec)) listOnly = true;
+    if (spec.kind === "noListFormatting" && said(spec)) paragraph = true;
+  }
+  if (!limit) sentences.push(FILLER);
+  if (opening) sentences[0] = `${opening} ${sentences[0]}`;
+  const wantsList = task.checks.some((c) => c.kind === "numberedItemsExactly" || c.kind === "onlyNumberedLines");
+  if (wantsList) {
+    const count = numbered || 5;
+    const lines = Array.from({ length: count }, (_, i) => `${i + 1}. ${sentences[i % sentences.length]}`);
+    return listOnly ? lines.join("\n") : ["Here is the list:", "", ...lines, "", "Let me know if you want changes."].join("\n");
+  }
+  if (paragraph || task.checks.every((c) => c.kind !== "noListFormatting")) return sentences.join(" ");
+  return sentences.map((line) => `- ${line}`).join("\n");
+}
+
 export function mockGenerate(task: Task, prompt: string): string {
   switch (task.id) {
+    case "custom":
+      return customTask(task, prompt);
     case "cfo-summary":
       return cfoSummary(task, prompt);
     case "extension-email":

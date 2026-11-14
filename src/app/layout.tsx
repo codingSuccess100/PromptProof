@@ -1,16 +1,21 @@
-import { APP_NAME } from "@/lib/brand";
 import type { Metadata, Viewport } from "next";
-import type { ReactNode } from "react";
+import "@fontsource-variable/bricolage-grotesque";
+import "@fontsource-variable/geist-mono";
+import { APP_NAME, TAGLINE } from "@/lib/brand";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: APP_NAME,
-  description: "Debug your prompt before you trust the output.",
+  description: TAGLINE,
 };
 
-export const viewport: Viewport = { width: "device-width", initialScale: 1 };
+export const viewport: Viewport = {
+  themeColor: "#060608",
+  width: "device-width",
+  initialScale: 1,
+};
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>{children}</body>

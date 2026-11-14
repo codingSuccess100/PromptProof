@@ -138,11 +138,22 @@ async function callOpenAI(input: string, key: string, model: string): Promise<st
 export async function generate(task: Task, prompt: string): Promise<ModelReply> {
   const key = process.env.OPENAI_API_KEY;
   if (!key) {
+    // Optional pause so loading states can be seen and rehearsed without a key.
+    const pause = Number(process.env.MOCK_DELAY_MS);
+    if (pause > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(pause, 5000)));
     return { text: mockGenerate(task, prompt), model: "offline mock model", mock: true };
   }
   const model = configuredModel();
   const text = await callOpenAI(buildModelInput(task, prompt), key, model);
   return { text, model, mock: false };
+}
+
+/** Free-form call with no task attached. Returns null in mock mode so the caller can use a labeled stand-in. */
+export async function generateText(input: string): Promise<ModelReply | null> {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) return null;
+  const model = configuredModel();
+  return { text: await callOpenAI(input, key, model), model, mock: false };
 }
 
 /** Runs async jobs with a cap on how many are in flight at once. Results keep input order. */

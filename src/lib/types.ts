@@ -87,9 +87,36 @@ export interface GhostSuggestion {
   alreadyInPrompt: boolean;
 }
 
+/** Rule-based requirement a user can attach to their own prompt. Text is matched literally, never as a regex. */
+export type CustomCheckKind =
+  | "maxWords" // value = word limit
+  | "includes" // text must appear
+  | "excludes" // text must not appear
+  | "startsWith" // answer must begin with text
+  | "singleParagraph" // one paragraph, no list formatting
+  | "numberedItems" // value = exact number of numbered items
+  | "listOnly"; // numbered list and nothing else
+
+export interface CustomCheck {
+  kind: CustomCheckKind;
+  text?: string;
+  value?: number;
+}
+
+/** A task the user defines for their own prompt. Sent with taskId "custom". */
+export interface CustomTaskInput {
+  /** Optional text the model should work on. Sent to the model with the prompt. */
+  material: string;
+  checks: CustomCheck[];
+}
+
+export const CUSTOM_TASK_ID = "custom";
+
 export interface RunRequest {
   taskId: string;
   prompt: string;
+  /** Required when taskId is "custom". */
+  custom?: CustomTaskInput;
 }
 
 export interface RunResult {
@@ -125,6 +152,21 @@ export interface AblationResult {
 export interface XrayRequest {
   taskId: string;
   prompt: string;
+  custom?: CustomTaskInput;
+  /** Runs per removed part, 1 to 3. Defaults to the server setting. */
+  runs?: number;
+}
+
+export interface SuggestRequest {
+  /** Plain-language description of what a good answer must do. */
+  goal: string;
+}
+
+export interface SuggestResult {
+  /** Proposed by a model (or by simple rules in mock mode). The user must review them. */
+  checks: CustomCheck[];
+  model: string;
+  mock: boolean;
 }
 
 export interface XrayResult {
